@@ -1,6 +1,4 @@
 import math
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
 
@@ -9,12 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_TEMPO_ROOT = _REPO_ROOT / "Tempo"
-if _TEMPO_ROOT.exists() and str(_TEMPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_TEMPO_ROOT))
-
-from training.ross_compat import FluxDecoder, TimestepEmbedder, create_diffusion  # noqa: E402
+from videollama3.ross_compat import FluxDecoder, TimestepEmbedder, create_diffusion
 
 
 def pad_square_resize_frame(frame, target_size: int):
