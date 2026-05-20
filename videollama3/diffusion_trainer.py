@@ -54,7 +54,8 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
             k, c, h, w = latent.shape
             return latent.permute(0, 2, 3, 1).reshape(k * h * w, c).contiguous()
 
-        with torch.no_grad():
+        # Run VAE in float32 regardless of the outer autocast context.
+        with torch.no_grad(), torch.amp.autocast(device_type="cuda", enabled=False):
             return _encode_frames(images)
 
     def _extract_diffusion_conditions(self, model, outputs) -> list[list[torch.Tensor]]:
@@ -156,6 +157,10 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         dtype = selected_restored[0].dtype
         restored_tokens = torch.stack([tokens.to(device=device, dtype=dtype) for tokens in selected_restored], dim=0)
         targets = torch.stack([target.to(device=device, dtype=dtype) for target in selected_targets], dim=0)
+        if not torch.isfinite(restored_tokens).all():
+            raise RuntimeError("Non-finite diffusion condition tokens produced by the language model.")
+        if not torch.isfinite(targets).all():
+            raise RuntimeError("Non-finite diffusion target tokens produced by the VAE.")
         return self._get_diffusion_head_module().diffusion_loss(restored_tokens, targets)
 
     def create_optimizer(self):

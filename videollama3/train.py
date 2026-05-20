@@ -113,9 +113,9 @@ class ModelArguments:
     diffusion_depth: int = field(default=4)
     diffusion_loss_weight: float = field(default=1.0)
     mm_pixel_decoder: Optional[str] = field(default=None)
-    diffusion_vae_image_size: int = field(default=336)
+    diffusion_vae_image_size: int = field(default=384)
     diffusion_chunk_size: int = field(default=4)
-    diffusion_target_spatial: int = field(default=21)
+    diffusion_target_spatial: int = field(default=12)
     causal_diffusion: bool = field(default=False)
     pretrained_diffusion_head: Optional[str] = field(default=None)
 
@@ -543,6 +543,11 @@ def train(attn_implementation=None):
         print('------training args------')
         print(training_args)
 
+    if attn_implementation is None:
+        attn_implementation = model_args.mm_attn_implementation
+    if attn_implementation == "flash_attention_2" and not torch.cuda.is_available():
+        attn_implementation = "sdpa"
+
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
     model_args.torch_dtype = compute_dtype
 
@@ -574,6 +579,7 @@ def train(attn_implementation=None):
     config.use_token_compression = model_args.use_token_compression
     config.use_flash_loss = model_args.use_flash_loss
     config.diffusion_chunk_size = model_args.diffusion_chunk_size
+    config.mm_attn_implementation = model_args.mm_attn_implementation
 
     if model_args.vision_encoder is not None:
         config.vision_encoder = model_args.vision_encoder
@@ -657,7 +663,7 @@ def train(attn_implementation=None):
             )
 
         mm_projector = model.get_mm_projector()
-        mm_projector.to(dtype=compute_dtype if training_args.bf16 else torch.float16, device=training_args.device)
+        mm_projector.to(dtype=compute_dtype, device=training_args.device)
 
         data_args.is_multimodal = True
 
@@ -792,4 +798,4 @@ def train(attn_implementation=None):
 
 
 if __name__ == "__main__":
-    train(attn_implementation="flash_attention_2")
+    train()

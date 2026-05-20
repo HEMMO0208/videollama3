@@ -28,6 +28,8 @@ def pad_square_resize_frame(frame, target_size: int):
             arr = arr.transpose(1, 2, 0)
     else:
         arr = np.asarray(frame)
+        if arr.ndim == 3 and arr.shape[0] == 3 and arr.shape[-1] != 3:
+            arr = arr.transpose(1, 2, 0)
 
     if arr.dtype != np.uint8:
         arr = (arr * 255).clip(0, 255).astype(np.uint8) if arr.max() <= 1.0 else arr.astype(np.uint8)
@@ -290,6 +292,7 @@ class MaskedVideoTokenDiffusion(nn.Module):
         self.causal = causal
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
+        self.cond_norm = nn.LayerNorm(hidden_size)
         self.latent_embed = nn.Linear(token_dim, hidden_size)
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.pos_embed = nn.Parameter(torch.zeros(1, max_latent_tokens, hidden_size))
@@ -342,7 +345,7 @@ class MaskedVideoTokenDiffusion(nn.Module):
             raise ValueError(f"Noisy target and video token shape mismatch: {tuple(x.shape[:2])} vs {tuple(cond_tokens.shape[:2])}")
         if x.shape[1] > self.max_latent_tokens:
             raise ValueError(f"sequence length {x.shape[1]} exceeds max_latent_tokens={self.max_latent_tokens}")
-        seq = cond_tokens + self.latent_embed(x) + self.t_embedder(t).unsqueeze(1) + self.pos_embed[:, : x.shape[1]]
+        seq = self.cond_norm(cond_tokens) + self.latent_embed(x) + self.t_embedder(t).unsqueeze(1) + self.pos_embed[:, : x.shape[1]]
         attn_mask = self._build_attn_mask(seq.shape[1], seq.device)
         for block in self.blocks:
             seq = block(seq, attn_mask=attn_mask)
