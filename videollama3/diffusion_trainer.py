@@ -19,19 +19,28 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         self.vae = vae
         self.diffusion_loss_weight = diffusion_loss_weight
         self._last_loss_logs = {}
+        # Attach diffusion_head to the raw model BEFORE Trainer.__init__ so that
+        # DeepSpeed's ZeRO optimizer includes its parameters in param_names when it
+        # calls model.named_parameters() during initialization. Without this,
+        # add_param_group() adds params that DeepSpeed can't find → KeyError.
+        if diffusion_head is not None:
+            raw_model = kwargs.get("model", None)
+            if raw_model is not None:
+                raw_model.add_module("_diffusion_head", diffusion_head)
         super().__init__(*args, **kwargs)
-        if self.diffusion_head is not None:
-            self.diffusion_head.to(self.model.device)
-            if hasattr(self, "accelerator"):
-                self.diffusion_head = self.accelerator.prepare_model(self.diffusion_head)
         if self.vae is not None:
             self.vae.to(self.model.device)
 
     def _get_diffusion_head_module(self):
         if self.diffusion_head is None:
             return None
-        if hasattr(self, "accelerator"):
-            return self.accelerator.unwrap_model(self.diffusion_head)
+        # Unwrap model (DeepSpeed/DDP wrapper) and retrieve the registered submodule
+        model = self.model
+        for attr in ("module", "base_model"):
+            if hasattr(model, attr):
+                model = getattr(model, attr)
+        if hasattr(model, "_diffusion_head"):
+            return model._diffusion_head
         return getattr(self.diffusion_head, "module", self.diffusion_head)
 
     def _encode_diffusion_target(self, diffusion_images: torch.Tensor) -> torch.Tensor:
@@ -232,6 +241,10 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         return super().log(logs, start_time=start_time)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        # Strip _diffusion_head.* from the main model state dict so it isn't
+        # saved redundantly in the LLM checkpoint (it's saved separately below).
+        if state_dict is not None:
+            state_dict = {k: v for k, v in state_dict.items() if not k.startswith("_diffusion_head.")}
         super()._save(output_dir, state_dict)
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         if self.diffusion_head is not None and self.args.should_save:
