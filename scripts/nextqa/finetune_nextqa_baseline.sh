@@ -26,7 +26,7 @@ DATA_PATH=${DATA_PATH:-data/nextqa/train_sft.jsonl}
 OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/nextqa_baseline}
 RUN_NAME=${RUN_NAME:-nextqa_baseline}
 
-pip install imageio ffmpeg-python moviepy
+pip install imageio ffmpeg-python moviepy tensorboard
 
 torchrun --nnodes "$WORLD_SIZE" \
     --nproc_per_node "$NPROC_PER_NODE" \

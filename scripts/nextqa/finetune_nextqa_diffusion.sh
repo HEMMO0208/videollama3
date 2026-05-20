@@ -27,7 +27,7 @@ OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/nextqa_diffusion}
 RUN_NAME=${RUN_NAME:-nextqa_diffusion}
 MM_PIXEL_DECODER=${MM_PIXEL_DECODER:?Set MM_PIXEL_DECODER to the ross VAE checkpoint path}
 
-pip install imageio ffmpeg-python moviepy
+pip install imageio ffmpeg-python moviepy tensorboard
 
 torchrun --nnodes "$WORLD_SIZE" \
     --nproc_per_node "$NPROC_PER_NODE" \
