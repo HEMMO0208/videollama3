@@ -12,10 +12,13 @@ from transformers.trainer import (
     is_sagemaker_mp_enabled,
     get_parameter_names,
     has_length,
-    ALL_LAYERNORM_LAYERS,
     logger,
     TRAINER_STATE_NAME,
 )
+try:
+    from transformers.trainer import ALL_LAYERNORM_LAYERS
+except ImportError:
+    from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -102,7 +105,7 @@ def safe_save_model_for_hf_trainer(trainer: Trainer,
         current_folder = output_dir.split('/')[-1]
         parent_folder = os.path.dirname(output_dir)
         # if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
-        if torch.distributed.get_rank() == 0:
+        if (not torch.distributed.is_available()) or (not torch.distributed.is_initialized()) or torch.distributed.get_rank() == 0:
             if current_folder.startswith('checkpoint-'):
                 mm_projector_folder = os.path.join(parent_folder, "mm_projector")
                 os.makedirs(mm_projector_folder, exist_ok=True)
@@ -223,12 +226,13 @@ class LengthGroupedSampler(Sampler):
 
 class VideoLLaMA3Trainer(Trainer):
 
-    def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
-        if self.train_dataset is None or not has_length(self.train_dataset):
+    def _get_train_sampler(self, train_dataset=None) -> Optional[torch.utils.data.Sampler]:
+        train_dataset = train_dataset if train_dataset is not None else self.train_dataset
+        if train_dataset is None or not has_length(train_dataset):
             return None
 
         if self.args.group_by_modality_length:
-            lengths = self.train_dataset.modality_lengths
+            lengths = train_dataset.modality_lengths
             return LengthGroupedSampler(
                 self.args.train_batch_size,
                 world_size=self.args.world_size * self.args.gradient_accumulation_steps,
@@ -236,7 +240,10 @@ class VideoLLaMA3Trainer(Trainer):
                 group_by_modality=True,
             )
         else:
-            return super()._get_train_sampler()
+            try:
+                return super()._get_train_sampler(train_dataset)
+            except TypeError:
+                return super()._get_train_sampler()
 
     def create_optimizer(self):
         """

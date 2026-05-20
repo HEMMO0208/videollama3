@@ -84,12 +84,15 @@ class Videollama3MetaModel:
             else:
                 self.vision_encoder = vision_encoder
         else:
-            if fsdp is not None and len(fsdp) > 0:
-                vision_encoder = self.vision_encoder[0]
-            else:
-                vision_encoder = self.vision_encoder
-            # NOTE: only compatible with delay_load encoder
-            # vision_encoder.load_model(vision_encoder.cfg_only)
+            # The encoder was built during __init__ (from config.vision_encoder).
+            # When loading from a base checkpoint (e.g. VideoLLaMA3-2B), the
+            # checkpoint's old-format vision_encoder keys don't match our wrapper's
+            # key structure, so HF partially corrupts the NaViT weights.
+            # Force-reloading from HF here overwrites any corruption.
+            enc = self.vision_encoder[0] if (fsdp is not None and len(fsdp) > 0) else self.vision_encoder
+            if hasattr(enc, 'load_model'):
+                enc.load_model(model_args)
+            vision_encoder = self.get_vision_encoder()
 
         self.config.use_mm_proj = True
         self.config.mm_projector_type = getattr(model_args, 'mm_projector_type', 'linear')

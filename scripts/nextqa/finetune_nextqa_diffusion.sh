@@ -60,7 +60,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --per_device_train_batch_size "$LOCAL_BATCH_SIZE" \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps "$GRADIENT_ACCUMULATION_STEPS" \
-    --evaluation_strategy "no" \
+    --eval_strategy "no" \
     --save_strategy "steps" \
     --save_steps 1000 \
     --save_total_limit 2 \

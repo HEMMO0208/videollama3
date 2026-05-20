@@ -54,8 +54,7 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
             k, c, h, w = latent.shape
             return latent.permute(0, 2, 3, 1).reshape(k * h * w, c).contiguous()
 
-        # Run VAE in float32 regardless of the outer autocast context.
-        with torch.no_grad(), torch.amp.autocast(device_type="cuda", enabled=False):
+        with torch.no_grad():
             return _encode_frames(images)
 
     @staticmethod

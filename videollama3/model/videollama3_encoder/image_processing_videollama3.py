@@ -37,9 +37,7 @@ from transformers.image_utils import (
     OPENAI_CLIP_MEAN,
     OPENAI_CLIP_STD,
     ChannelDimension,
-    ImageInput,
     PILImageResampling,
-    VideoInput,
     get_image_size,
     infer_channel_dimension_format,
     is_scaled_image,
@@ -47,6 +45,10 @@ from transformers.image_utils import (
     make_list_of_images,
     to_numpy_array,
 )
+try:
+    from transformers.image_utils import VideoInput
+except ImportError:
+    VideoInput = Union[List[ImageInput], np.ndarray, torch.Tensor]
 from transformers.utils import TensorType, is_vision_available, logging
 
 
