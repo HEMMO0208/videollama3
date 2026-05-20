@@ -28,6 +28,58 @@ from .encoder import build_vision_encoder
 from .projector import build_vision_projector, load_mm_projector
 
 
+def _load_vision_encoder_from_checkpoint(enc, checkpoint_path):
+    """Load vision encoder weights from a VideoLLaMA3 checkpoint.
+
+    The checkpoint stores encoder weights as model.vision_encoder.X (flat),
+    but our Videollama3VisionEncoder wrapper expects them at vision_encoder.X
+    inside the inner vision_encoder module. This function remaps the keys.
+    Returns True on success, False if no matching keys were found.
+    """
+    if checkpoint_path is None:
+        return False
+    try:
+        import json
+        import torch
+
+        prefix = "model.vision_encoder."
+
+        def _extract(state_dict):
+            return {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+
+        safe_single = os.path.join(checkpoint_path, "model.safetensors")
+        safe_index  = os.path.join(checkpoint_path, "model.safetensors.index.json")
+        bin_single  = os.path.join(checkpoint_path, "pytorch_model.bin")
+        bin_index   = os.path.join(checkpoint_path, "pytorch_model.bin.index.json")
+
+        ve_state = {}
+        if os.path.exists(safe_single):
+            from safetensors.torch import load_file
+            ve_state = _extract(load_file(safe_single))
+        elif os.path.exists(safe_index):
+            from safetensors.torch import load_file
+            idx = json.load(open(safe_index))
+            shards = set(v for k, v in idx["weight_map"].items() if k.startswith(prefix))
+            for s in shards:
+                ve_state.update(_extract(load_file(os.path.join(checkpoint_path, s))))
+        elif os.path.exists(bin_single):
+            ve_state = _extract(torch.load(bin_single, map_location="cpu"))
+        elif os.path.exists(bin_index):
+            idx = json.load(open(bin_index))
+            shards = set(v for k, v in idx["weight_map"].items() if k.startswith(prefix))
+            for s in shards:
+                ve_state.update(_extract(torch.load(os.path.join(checkpoint_path, s), map_location="cpu")))
+
+        if not ve_state:
+            return False
+
+        inner = getattr(enc, "vision_encoder", enc)
+        inner.load_state_dict(ve_state, strict=False)
+        return True
+    except Exception:
+        return False
+
+
 def spatial_downsampling(features, grid_thws, stride=2):
     n, c = features.shape
 
@@ -84,14 +136,16 @@ class Videollama3MetaModel:
             else:
                 self.vision_encoder = vision_encoder
         else:
-            # The encoder was built during __init__ (from config.vision_encoder).
-            # When loading from a base checkpoint (e.g. VideoLLaMA3-2B), the
-            # checkpoint's old-format vision_encoder keys don't match our wrapper's
-            # key structure, so HF partially corrupts the NaViT weights.
-            # Force-reloading from HF here overwrites any corruption.
+            # The encoder was built during __init__ but HF's from_pretrained skips
+            # its weights because the checkpoint uses flat keys (model.vision_encoder.X)
+            # while our wrapper expects nested keys (model.vision_encoder.vision_encoder.X).
+            # Reload the encoder weights directly from the checkpoint with key remapping.
             enc = self.vision_encoder[0] if (fsdp is not None and len(fsdp) > 0) else self.vision_encoder
-            if hasattr(enc, 'load_model'):
-                enc.load_model(model_args)
+            checkpoint_path = getattr(model_args, 'model_path', None)
+            if not _load_vision_encoder_from_checkpoint(enc, checkpoint_path):
+                # Fallback: load fresh weights from HF hub (loses fine-tuning)
+                if hasattr(enc, 'load_model'):
+                    enc.load_model(model_args)
             vision_encoder = self.get_vision_encoder()
 
         self.config.use_mm_proj = True
