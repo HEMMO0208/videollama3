@@ -58,6 +58,20 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         with torch.no_grad(), torch.amp.autocast(device_type="cuda", enabled=False):
             return _encode_frames(images)
 
+    @staticmethod
+    def _find_first_nan_layer(hidden_states_tuple, video_mask=None):
+        """Return (layer_idx, desc) for the first layer with non-finite values."""
+        for i, hs in enumerate(hidden_states_tuple):
+            probe = hs[:, video_mask[0]] if video_mask is not None and hs.shape[1] == video_mask.shape[1] else hs
+            if not torch.isfinite(probe).all():
+                finite = torch.isfinite(probe)
+                nan_n = probe.isnan().sum().item()
+                inf_n = probe.isinf().sum().item()
+                finite_vals = probe[finite]
+                rng = f"[{finite_vals.min():.2f}, {finite_vals.max():.2f}]" if finite_vals.numel() > 0 else "all-nan"
+                return i, (f"layer={i}/{len(hidden_states_tuple)-1}  nan={nan_n}  inf={inf_n}  finite_range={rng}")
+        return -1, "all-finite"
+
     def _extract_diffusion_conditions(self, model, outputs) -> list[list[torch.Tensor]]:
         if outputs.hidden_states is None:
             raise RuntimeError("output_hidden_states=True is required for diffusion supervision.")
@@ -158,7 +172,14 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         restored_tokens = torch.stack([tokens.to(device=device, dtype=dtype) for tokens in selected_restored], dim=0)
         targets = torch.stack([target.to(device=device, dtype=dtype) for target in selected_targets], dim=0)
         if not torch.isfinite(restored_tokens).all():
-            raise RuntimeError("Non-finite diffusion condition tokens produced by the language model.")
+            layer_idx, desc = self._find_first_nan_layer(outputs.hidden_states if hasattr(outputs, "hidden_states") and outputs.hidden_states else [])
+            lm_loss_val = outputs.loss.detach().float().item() if outputs.loss is not None else None
+            raise RuntimeError(
+                f"Non-finite diffusion condition tokens produced by the language model.\n"
+                f"  lm_loss={lm_loss_val}\n"
+                f"  NaN origin: {desc}\n"
+                f"  (layer 0 = embedding output; if layer 0 has NaN, source is mm_features/projector)"
+            )
         if not torch.isfinite(targets).all():
             raise RuntimeError("Non-finite diffusion target tokens produced by the VAE.")
         return self._get_diffusion_head_module().diffusion_loss(restored_tokens, targets)
