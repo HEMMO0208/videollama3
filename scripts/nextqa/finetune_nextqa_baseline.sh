@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 ARG_WORLD_SIZE=${1:-1}
 ARG_NPROC_PER_NODE=${2:-8}
 ARG_MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
@@ -31,7 +34,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --master_port "$MASTER_PORT" \
     --node_rank "$RANK" \
     videollama3/train.py \
-    --deepspeed scripts/zero1.json \
+    --deepspeed "$ROOT_DIR/scripts/zero1.json" \
     --model_type videollama3_qwen2 \
     --model_path "$MODEL_PATH" \
     --vision_encoder DAMO-NLP-SG/SigLIP-NaViT \
