@@ -338,6 +338,8 @@ class MaskedVideoTokenDiffusion(nn.Module):
             raise ValueError(f"Noisy target and video token shape mismatch: {tuple(x.shape[:2])} vs {tuple(cond_tokens.shape[:2])}")
         if x.shape[1] > self.max_latent_tokens:
             raise ValueError(f"sequence length {x.shape[1]} exceeds max_latent_tokens={self.max_latent_tokens}")
+        # q_sample uses float32 schedule buffers which promote x_t to float32; realign with model dtype
+        x = x.to(dtype=self.latent_embed.weight.dtype)
         seq = self.cond_norm(cond_tokens) + self.latent_embed(x) + self.t_embedder(t).unsqueeze(1) + self.pos_embed[:, : x.shape[1]]
         attn_mask = self._build_attn_mask(seq.shape[1], seq.device)
         for block in self.blocks:
