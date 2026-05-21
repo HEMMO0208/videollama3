@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="/home/hmkang/project/videollama3"
 cd "$ROOT_DIR"
 
+pip install imageio ffmpeg-python moviepy tensorboard
+
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
