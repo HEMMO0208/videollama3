@@ -119,9 +119,26 @@ def resolve_video_path(record, data_folder):
 
 
 def build_inputs(record, video_path, processor, fps, max_frames):
-    frames, timestamps = processor.load_video(video_path, fps=fps, max_frames=max_frames)
     human = next(message for message in record["conversations"] if message["from"] == "human")
     instruction = strip_video_tag(human["value"])
+    if type(processor).__module__.startswith("transformers_modules."):
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video", "video": {"video_path": video_path, "fps": fps, "max_frames": max_frames}},
+                    {"type": "text", "text": instruction},
+                ],
+            }
+        ]
+        return processor(
+            conversation=conversation,
+            add_system_prompt=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+
+    frames, timestamps = processor.load_video(video_path, fps=fps, max_frames=max_frames)
     conversation = [
         {
             "role": "user",
@@ -171,6 +188,7 @@ def main():
     parser.add_argument("--max-frames", type=int, default=100)
     parser.add_argument("--max-new-tokens", type=int, default=16)
     parser.add_argument("--max-visual-tokens", type=int, default=None)
+    parser.add_argument("--attn-implementation", default=None)
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--limit", type=int, default=None)
@@ -188,6 +206,8 @@ def main():
     init_kwargs = {}
     if torch.cuda.is_available():
         init_kwargs["device_map"] = {"": "cuda:0"}
+    if args.attn_implementation is not None:
+        init_kwargs["attn_implementation"] = args.attn_implementation
     model, processor = model_init(args.model_path, args.max_visual_tokens, **init_kwargs)
 
     records = list(load_jsonl(args.jsonl_path))

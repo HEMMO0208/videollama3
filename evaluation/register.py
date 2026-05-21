@@ -14,13 +14,17 @@ import videollama3
 def model_init(model_path, max_visual_tokens=None, **kwargs):
     import torch
     from transformers import AutoModelForCausalLM, AutoProcessor
-    device_map = kwargs.get('device_map', {"": "cuda:0"})
+    import transformers.image_utils as image_utils
+    if not hasattr(image_utils, "VideoInput"):
+        image_utils.VideoInput = list
+    device_map = kwargs.get('device_map', {"": "cuda:0"} if torch.cuda.is_available() else "cpu")
+    attn_implementation = kwargs.get('attn_implementation', "flash_attention_2")
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map=device_map,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2"
+        attn_implementation=attn_implementation,
     )
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     if max_visual_tokens is not None:
@@ -34,7 +38,8 @@ def mm_infer(data_dict, model, tokenizer, modal='video', **kwargs):
     keywords = [tokenizer.eos_token]
     stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, data_dict["input_ids"])
 
-    data_dict = {k: v.cuda() if isinstance(v, torch.Tensor) else v for k, v in data_dict.items()}
+    device = next(model.parameters()).device
+    data_dict = {k: v.to(device=device) if isinstance(v, torch.Tensor) else v for k, v in data_dict.items()}
     if "pixel_values" in data_dict:
         data_dict["pixel_values"] = data_dict["pixel_values"].to(torch.bfloat16)
 

@@ -37,6 +37,9 @@ fi
 if [[ -n "${MAX_VISUAL_TOKENS:-}" ]]; then
   extra_args+=(--max-visual-tokens "$MAX_VISUAL_TOKENS")
 fi
+if [[ -n "${ATTN_IMPLEMENTATION:-}" ]]; then
+  extra_args+=(--attn-implementation "$ATTN_IMPLEMENTATION")
+fi
 if [[ -n "${NUM_CHUNKS:-}" ]]; then
   extra_args+=(--num-chunks "$NUM_CHUNKS")
 fi
