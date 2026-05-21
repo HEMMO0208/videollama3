@@ -35,9 +35,6 @@ extra_args=()
 if [[ -n "${LAYERS:-}" ]]; then
   extra_args+=(--layers "$LAYERS")
 fi
-if [[ -n "${HEADS:-}" ]]; then
-  extra_args+=(--heads "$HEADS")
-fi
 
 "$PYTHON_BIN" scripts/nextqa/visualize_nextqa_q_to_video_attn.py \
   --model-path "$MODEL_PATH" \
