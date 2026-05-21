@@ -158,19 +158,13 @@ def collect_spatial_attentions(model, inputs, layer_indices, video_indices, fram
 
 
 def load_video_frames(video_path, fps, max_frames):
-    """Load raw video frames as a list of PIL Images via imageio."""
-    import imageio
-    reader = imageio.get_reader(video_path)
-    video_fps = reader.get_meta_data().get("fps", fps)
+    """Load raw video frames as a list of PIL Images via decord."""
+    from decord import VideoReader, cpu
+    vr = VideoReader(video_path, ctx=cpu(0))
+    video_fps = float(vr.get_avg_fps()) or fps
     step = max(1, round(video_fps / fps))
-    frames = []
-    for i, frame in enumerate(reader):
-        if i % step == 0:
-            frames.append(Image.fromarray(frame).convert("RGB"))
-            if len(frames) >= max_frames:
-                break
-    reader.close()
-    return frames
+    indices = list(range(0, len(vr), step))[:max_frames]
+    return [Image.fromarray(vr[i].asnumpy()).convert("RGB") for i in indices]
 
 
 def save_raw_frame(frame_pil, path):
