@@ -205,7 +205,7 @@ def main():
     parser.add_argument("--data-folder", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--fps", type=int, default=1)
-    parser.add_argument("--max-frames", type=int, default=100)
+    parser.add_argument("--max-frames", type=int, default=32)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--attn-implementation", default="eager")
     parser.add_argument("--layers", default="spread:5")
