@@ -34,33 +34,20 @@ from scripts.nextqa.visualize_nextqa_video_self_attn import (
 from videollama3 import disable_torch_init
 
 
-def get_question_indices(inputs, model):
-    """Return indices of text tokens that follow the last video token (question/answer text)."""
-    input_ids = inputs["input_ids"][0]
-    image_token_id = getattr(model.config, "image_token_index", None)
-    if image_token_id is None:
-        image_token_id = getattr(model.config, "image_token_id", None)
-    if image_token_id is None:
-        return torch.empty(0, dtype=torch.long)
-    video_positions = torch.nonzero(input_ids == image_token_id, as_tuple=False).flatten()
-    if video_positions.numel() == 0:
-        return torch.empty(0, dtype=torch.long)
-    last_video_pos = int(video_positions.max().item())
-    return torch.arange(last_video_pos + 1, len(input_ids), dtype=torch.long)
 
+def collect_q_to_spatial_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames, grid_h, grid_w):
+    """Hook-based capture: per-layer, per-frame spatial attention map (question→video, heads mean).
 
-def collect_q_to_spatial_attentions(model, inputs, layer_indices, video_indices, question_indices, frame_ids, num_frames, grid_h, grid_w):
-    """Hook-based capture: per-layer, per-frame spatial attention map (question→video, heads mean)."""
+    Question indices are derived *inside* the hook from the actual sequence length and
+    the valid video positions after any compression/truncation, so they are always in bounds.
+    """
     if not hasattr(model, "model") or not hasattr(model.model, "layers"):
         raise RuntimeError("Model does not expose model.model.layers; cannot use hook-based attention capture.")
-    if question_indices.numel() == 0:
-        raise RuntimeError("No question tokens found after the video tokens.")
 
     captured = {}
     hooks = []
     orig_forwards = {}
     video_idx_cpu = video_indices.cpu()
-    q_idx_cpu = question_indices.cpu()
 
     for layer_idx in layer_indices:
         self_attn = model.model.layers[layer_idx].self_attn
@@ -77,16 +64,30 @@ def collect_q_to_spatial_attentions(model, inputs, layer_indices, video_indices,
             def _hook(module, inp, out):
                 if out[1] is not None:
                     import numpy as np
-                    attn = out[1][0].detach().float()                          # [H, N, N]
-                    q_to_v = attn[:, q_idx_cpu][:, :, video_idx_cpu].cpu()    # [H, Nq, Nv]
+                    attn = out[1][0].detach().float()   # [H, N, N]
+                    n = attn.shape[1]
+
+                    # clip video indices to actual sequence length (handles compression/truncation)
+                    v_valid = video_idx_cpu[video_idx_cpu < n]
+                    if v_valid.numel() == 0:
+                        return (out[0], None) + out[2:]
+
+                    # question tokens = everything after the last video token in the actual sequence
+                    last_v = int(v_valid.max().item())
+                    q_indices = torch.arange(last_v + 1, n, dtype=torch.long)
+                    if q_indices.numel() == 0:
+                        return (out[0], None) + out[2:]
+
+                    q_to_v = attn[:, q_indices][:, :, v_valid].cpu()   # [H, Nq, Nv]
                     spatial_maps = []
                     for f in range(num_frames):
                         f_mask = frame_ids == f
-                        if not f_mask.any():
+                        # also clip frame mask to v_valid length
+                        f_mask_valid = f_mask[:v_valid.numel()]
+                        if not f_mask_valid.any():
                             spatial_maps.append(np.zeros((grid_h, grid_w), dtype=np.float32))
                             continue
-                        # attention from question tokens to each spatial token in frame f, mean over heads and queries
-                        received = q_to_v[:, :, f_mask].mean(dim=(0, 1)).numpy()  # [Nf]
+                        received = q_to_v[:, :, f_mask_valid].mean(dim=(0, 1)).numpy()  # [Nf]
                         spatial_maps.append(received.reshape(grid_h, grid_w))
                     captured[idx] = spatial_maps
                 return (out[0], None) + out[2:]
@@ -153,7 +154,6 @@ def main():
         inputs.setdefault("modals", ["video"])
 
         video_indices = get_video_indices(inputs, model).to(device)
-        question_indices = get_question_indices(inputs, model)
         frame_ids, num_frames = get_frame_ids(inputs, int(video_indices.numel()))
         grid_h, grid_w = get_grid_shape(inputs)
         if grid_h is None:
@@ -162,7 +162,7 @@ def main():
         layers = parse_layers(args.layers, num_layers)
 
         captured = collect_q_to_spatial_attentions(
-            model, inputs, layers, video_indices, question_indices, frame_ids, num_frames, grid_h, grid_w
+            model, inputs, layers, video_indices, frame_ids, num_frames, grid_h, grid_w
         )
 
         num_vis_frames = min(num_frames, len(frames))
@@ -187,7 +187,6 @@ def main():
             "gt": get_gt_letter(record),
             "question_type": record.get("metadata", {}).get("question_type", ""),
             "num_video_tokens": int(video_indices.numel()),
-            "num_question_tokens": int(question_indices.numel()),
             "num_frames": int(num_frames),
             "grid_h": grid_h,
             "grid_w": grid_w,
