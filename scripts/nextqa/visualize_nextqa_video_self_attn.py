@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -10,7 +9,6 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -39,6 +37,20 @@ def save_heatmap(matrix, path, title, xlabel, ylabel):
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def save_bar_chart(values, path, title, xlabel, ylabel):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(max(6, len(values) * 0.35), 4))
+    ax.bar(range(len(values)), values)
+    ax.set_xticks(range(len(values)))
+    ax.set_xticklabels(range(len(values)), fontsize=7)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     plt.tight_layout()
     plt.savefig(path, dpi=180)
     plt.close()
@@ -183,14 +195,6 @@ def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_
     return captured
 
 
-def compact_token_matrix(matrix, max_tokens):
-    if matrix.shape[0] <= max_tokens:
-        return matrix
-    factor = math.ceil(matrix.shape[0] / max_tokens)
-    new_size = matrix.shape[0] // factor
-    trimmed = matrix[: new_size * factor, : new_size * factor]
-    return trimmed.reshape(new_size, factor, new_size, factor).mean(axis=(1, 3))
-
 
 def record_question(record):
     human = next(message for message in record["conversations"] if message["from"] == "human")
@@ -210,7 +214,6 @@ def main():
     parser.add_argument("--attn-implementation", default="eager")
     parser.add_argument("--layers", default="spread:5")
     parser.add_argument("--heads", default="none")
-    parser.add_argument("--max-token-plot", type=int, default=512)
     args = parser.parse_args()
 
     disable_torch_init()
@@ -264,18 +267,8 @@ def main():
                 meta["num_heads"] = num_heads
                 meta["saved_heads"] = heads_to_save
 
-            mean_token = video_attn.mean(dim=0).numpy()
-            mean_frame = frame_attn.mean(dim=0).numpy()
+            mean_frame = frame_attn.mean(dim=0).numpy()  # [T, T]
 
-            np.save(sample_dir / f"layer_{layer_idx:02d}_video_self_attn_heads.npy", video_attn.numpy())
-            np.save(sample_dir / f"layer_{layer_idx:02d}_frame_to_frame_heads.npy", frame_attn.numpy())
-            save_heatmap(
-                compact_token_matrix(mean_token, args.max_token_plot),
-                sample_dir / f"layer_{layer_idx:02d}_heads_mean_video_token_self.png",
-                f"Layer {layer_idx} video-token self attention (heads mean)",
-                "key video token",
-                "query video token",
-            )
             save_heatmap(
                 mean_frame,
                 sample_dir / f"layer_{layer_idx:02d}_heads_mean_frame_to_frame.png",
@@ -283,6 +276,14 @@ def main():
                 "key frame",
                 "query frame",
             )
+            for f in range(num_frames):
+                save_bar_chart(
+                    mean_frame[f],
+                    sample_dir / f"layer_{layer_idx:02d}_frame_{f:02d}.png",
+                    f"Layer {layer_idx} frame {f} → frames (heads mean)",
+                    "key frame",
+                    "attention",
+                )
             for head_idx in heads_to_save:
                 save_heatmap(
                     frame_attn[head_idx].numpy(),

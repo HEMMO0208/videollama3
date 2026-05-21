@@ -38,9 +38,6 @@ fi
 if [[ -n "${HEADS:-}" ]]; then
   extra_args+=(--heads "$HEADS")
 fi
-if [[ -n "${MAX_TOKEN_PLOT:-}" ]]; then
-  extra_args+=(--max-token-plot "$MAX_TOKEN_PLOT")
-fi
 
 "$PYTHON_BIN" scripts/nextqa/visualize_nextqa_video_self_attn.py \
   --model-path "$MODEL_PATH" \
