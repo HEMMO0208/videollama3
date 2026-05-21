@@ -133,6 +133,56 @@ def frame_to_frame(video_attn, frame_ids, num_frames):
     return result
 
 
+def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames):
+    """Hook-based attention capture: only target layers are processed, full tensors freed immediately."""
+    if not hasattr(model, "model") or not hasattr(model.model, "layers"):
+        raise RuntimeError("Model does not expose model.model.layers; cannot use hook-based attention capture.")
+
+    captured = {}
+    hooks = []
+    orig_forwards = {}
+    video_idx_cpu = video_indices.cpu()
+
+    for layer_idx in layer_indices:
+        self_attn = model.model.layers[layer_idx].self_attn
+        orig_forwards[layer_idx] = self_attn.forward
+
+        def _make_patched(orig):
+            def _patched(*args, **kwargs):
+                kwargs["output_attentions"] = True
+                return orig(*args, **kwargs)
+            return _patched
+        self_attn.forward = _make_patched(orig_forwards[layer_idx])
+
+        def _make_hook(idx):
+            def _hook(module, inp, out):
+                if out[1] is not None:
+                    attn = out[1][0].detach().float()
+                    v_attn = attn[:, video_idx_cpu][:, :, video_idx_cpu].cpu()
+                    f_attn = frame_to_frame(v_attn, frame_ids, num_frames)
+                    captured[idx] = (v_attn, f_attn, int(attn.shape[0]))
+                return (out[0], None) + out[2:]
+            return _hook
+
+        hooks.append(self_attn.register_forward_hook(_make_hook(layer_idx)))
+
+    try:
+        with torch.inference_mode():
+            model(**inputs, use_cache=False, return_dict=True)
+    finally:
+        for h in hooks:
+            h.remove()
+        for idx, orig in orig_forwards.items():
+            model.model.layers[idx].self_attn.forward = orig
+
+    missing = [i for i in layer_indices if i not in captured]
+    if missing:
+        raise RuntimeError(
+            f"Layers {missing} returned no attention weights. Use --attn-implementation eager."
+        )
+    return captured
+
+
 def compact_token_matrix(matrix, max_tokens):
     if matrix.shape[0] <= max_tokens:
         return matrix
@@ -187,19 +237,12 @@ def main():
             inputs["pixel_values"] = inputs["pixel_values"].to(dtype=torch.bfloat16)
         inputs.setdefault("modals", ["video"])
 
-        with torch.inference_mode():
-            outputs = model(
-                **inputs,
-                output_attentions=True,
-                use_cache=False,
-                return_dict=True,
-            )
-        if outputs.attentions is None:
-            raise RuntimeError("Model did not return attentions. Use --attn-implementation eager.")
-
         video_indices = get_video_indices(inputs, model).to(device)
         frame_ids, num_frames = get_frame_ids(inputs, int(video_indices.numel()))
-        layers = parse_layers(args.layers, len(outputs.attentions))
+        num_layers = len(model.model.layers)
+        layers = parse_layers(args.layers, num_layers)
+
+        captured = collect_video_attentions(model, inputs, layers, video_indices, frame_ids, num_frames)
         heads_to_save = None
 
         meta = {
@@ -215,14 +258,12 @@ def main():
         }
 
         for layer_idx in layers:
-            attn = outputs.attentions[layer_idx][0].detach().float()
-            video_attn = attn[:, video_indices][:, :, video_indices].cpu()
+            video_attn, frame_attn, num_heads = captured[layer_idx]
             if heads_to_save is None:
-                heads_to_save = parse_heads(args.heads, video_attn.shape[0])
-                meta["num_heads"] = int(video_attn.shape[0])
+                heads_to_save = parse_heads(args.heads, num_heads)
+                meta["num_heads"] = num_heads
                 meta["saved_heads"] = heads_to_save
 
-            frame_attn = frame_to_frame(video_attn, frame_ids, num_frames)
             mean_token = video_attn.mean(dim=0).numpy()
             mean_frame = frame_attn.mean(dim=0).numpy()
 
