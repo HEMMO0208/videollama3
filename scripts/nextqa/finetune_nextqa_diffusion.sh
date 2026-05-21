@@ -67,7 +67,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --gradient_accumulation_steps "$GRADIENT_ACCUMULATION_STEPS" \
     --eval_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 1000 \
+    --save_steps 500 \
     --save_total_limit 2 \
     --llm_lr 1e-5 \
     --mm_projector_lr 1e-5 \
