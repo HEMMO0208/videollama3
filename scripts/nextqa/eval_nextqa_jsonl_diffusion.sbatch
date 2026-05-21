@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vllama3-nextqa-eval
+#SBATCH --job-name=vllama3-diff-nextqa-eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a6000:1
@@ -22,5 +22,7 @@ export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+export MODEL_KIND="${MODEL_KIND:-diffusion}"
 
 bash /home/hmkang/init_ross.sh bash "$ROOT_DIR/scripts/nextqa/eval_nextqa_jsonl.sh"
