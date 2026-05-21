@@ -2,11 +2,13 @@
 import argparse
 import json
 import os
+import random
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -31,18 +33,72 @@ def strip_video_tag(prompt):
     return prompt.strip()
 
 
-def parse_answer_letter(response, option_letters):
-    response = response.replace("answer", "").replace("Answer", "")
-    pattern = rf"[\(,\ ]*[{option_letters[0]}-{option_letters[-1]}][\),\ ]*"
-    matches = re.findall(pattern, response)
-    if not matches:
-        return None
-    return matches[0].strip().strip("()")
+def parse_multi_choice_response(response, all_choices, index2ans):
+    """
+    Match ../Tempo/eval_nextqa.py parsing behavior so JSONL inference is scored
+    with the same multiple-choice answer extraction as the Tempo NextQA evaluator.
+    """
+    for char in [",", ".", "!", "?", ";", ":", "'"]:
+        response = response.strip(char)
+    response = " " + response + " "
+
+    index_ans = True
+    ans_with_brack = False
+    candidates = []
+    for choice in all_choices:
+        if f"({choice})" in response:
+            candidates.append(choice)
+            ans_with_brack = True
+
+    if len(candidates) == 0:
+        for choice in all_choices:
+            if f"{choice} " in response:
+                candidates.append(choice)
+
+    if len(candidates) == 0:
+        for choice in all_choices:
+            if f"{choice}." in response:
+                candidates.append(choice)
+
+    if len(candidates) == 0 and len(response.split()) > 5:
+        for index, ans in index2ans.items():
+            if ans.lower() in response.lower():
+                candidates.append(index)
+                index_ans = False
+
+    if len(candidates) == 0:
+        pred_index = random.choice(all_choices)
+    elif len(candidates) > 1:
+        start_indexes = []
+        if index_ans:
+            if ans_with_brack:
+                for can in candidates:
+                    start_indexes.append(response.rfind(f"({can})"))
+            else:
+                for can in candidates:
+                    start_indexes.append(response.rfind(f" {can} "))
+        else:
+            for can in candidates:
+                start_indexes.append(response.lower().rfind(index2ans[can].lower()))
+        pred_index = candidates[np.argmax(start_indexes)]
+    else:
+        pred_index = candidates[0]
+
+    return pred_index
 
 
 def get_option_letters(prompt):
     letters = re.findall(r"^\(([A-Z])\)\s+", prompt, flags=re.MULTILINE)
     return letters or ["A", "B", "C", "D", "E"]
+
+
+def get_options(prompt, option_letters):
+    options = {}
+    for letter in option_letters:
+        match = re.search(rf"^\({letter}\)\s+(.*?)$", prompt, flags=re.MULTILINE)
+        if match:
+            options[letter] = match.group(1).strip()
+    return options
 
 
 def get_gt_letter(record):
@@ -84,24 +140,25 @@ def build_inputs(record, video_path, processor, fps, max_frames):
 
 
 def summarize(results):
-    correct_by_type = defaultdict(int)
-    total_by_type = defaultdict(int)
-    total = 0
-    correct = 0
+    evaluated = [item for item in results if item.get("correct") is not None]
+    correct = sum(1 for item in evaluated if item["correct"])
+    by_type = {}
     for item in results:
-        gt = item["gt"]
-        pred = item["pred"]
-        task_type = item.get("question_type", "")
-        is_correct = pred == gt
-        total += 1
-        correct += int(is_correct)
-        total_by_type[task_type] += 1
-        correct_by_type[task_type] += int(is_correct)
-
-    metrics = {"Overall": 100.0 * correct / total if total else 0.0}
-    for task_type in sorted(total_by_type):
-        metrics[task_type] = 100.0 * correct_by_type[task_type] / total_by_type[task_type]
-    return metrics
+        if item.get("correct") is None:
+            continue
+        qtype = str(item.get("question_type", "unknown"))
+        bucket = by_type.setdefault(qtype, {"total": 0, "correct": 0, "accuracy": 0.0})
+        bucket["total"] += 1
+        bucket["correct"] += int(bool(item["correct"]))
+    for bucket in by_type.values():
+        bucket["accuracy"] = bucket["correct"] / bucket["total"] if bucket["total"] else 0.0
+    return {
+        "total": len(results),
+        "evaluated": len(evaluated),
+        "correct": correct,
+        "accuracy": correct / len(evaluated) if evaluated else 0.0,
+        "by_type": by_type,
+    }
 
 
 def main():
@@ -117,10 +174,14 @@ def main():
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     if args.chunk_idx >= args.num_chunks:
         raise ValueError("--chunk-idx must be smaller than --num-chunks")
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     disable_torch_init()
     model_init, mm_infer = INFERENCES(args.model_path)
@@ -142,27 +203,40 @@ def main():
         for record in tqdm(records, desc="NextQA JSONL inference"):
             human_prompt = next(message["value"] for message in record["conversations"] if message["from"] == "human")
             option_letters = get_option_letters(human_prompt)
+            options = get_options(human_prompt, option_letters)
             gt = get_gt_letter(record)
             video_path = resolve_video_path(record, args.data_folder)
 
-            inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames)
-            response = mm_infer(
-                inputs,
-                model=model,
-                tokenizer=processor.tokenizer,
-                modal="video",
-                do_sample=False,
-                max_new_tokens=args.max_new_tokens,
-            )
-            pred = parse_answer_letter(response, option_letters)
             result = {
                 "id": record.get("id"),
                 "video": record.get("video", [None])[0],
                 "question_type": record.get("metadata", {}).get("question_type", ""),
                 "gt": gt,
-                "pred": pred,
-                "response": response,
+                "pred": None,
+                "response": None,
+                "correct": None,
+                "error": None,
             }
+            try:
+                inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames)
+                response = mm_infer(
+                    inputs,
+                    model=model,
+                    tokenizer=processor.tokenizer,
+                    modal="video",
+                    do_sample=False,
+                    max_new_tokens=args.max_new_tokens,
+                )
+                pred = parse_multi_choice_response(response, option_letters, options)
+                result.update(
+                    {
+                        "pred": pred,
+                        "response": response,
+                        "correct": pred == gt,
+                    }
+                )
+            except Exception as exc:
+                result["error"] = repr(exc)
             results.append(result)
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
             f.flush()
