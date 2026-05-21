@@ -45,9 +45,9 @@ torchrun --nnodes "$WORLD_SIZE" \
     --image_merge_size 1 \
     --video_merge_size 2 \
     --fps 1 \
-    --max_frames 120 \
+    --max_frames 100 \
     --model_max_length 16384 \
-    --mm_max_length 10240 \
+    --mm_max_length 14400 \
     --use_batch_flattening False \
     --use_token_compression True \
     --diffusion_enable True \
