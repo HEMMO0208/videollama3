@@ -44,6 +44,20 @@ def save_heatmap(matrix, path, title, xlabel, ylabel):
     plt.close()
 
 
+def save_bar_chart(values, path, title, xlabel, ylabel):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(max(6, len(values) * 0.35), 4))
+    ax.bar(range(len(values)), values)
+    ax.set_xticks(range(len(values)))
+    ax.set_xticklabels(range(len(values)), fontsize=7)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
 def parse_layers(layer_spec, num_layers):
     if layer_spec == "last":
         return [num_layers - 1]
@@ -103,6 +117,21 @@ def get_video_indices(inputs, model):
     return indices
 
 
+def get_question_indices(inputs, model):
+    """Return indices of text tokens that follow the video tokens (the question/answer text)."""
+    input_ids = inputs["input_ids"][0]
+    image_token_id = getattr(model.config, "image_token_index", None)
+    if image_token_id is None:
+        image_token_id = getattr(model.config, "image_token_id", None)
+    if image_token_id is None:
+        return torch.empty(0, dtype=torch.long)
+    video_positions = torch.nonzero(input_ids == image_token_id, as_tuple=False).flatten()
+    if video_positions.numel() == 0:
+        return torch.empty(0, dtype=torch.long)
+    last_video_pos = int(video_positions.max().item())
+    return torch.arange(last_video_pos + 1, len(input_ids), dtype=torch.long)
+
+
 def get_frame_ids(inputs, num_video_tokens):
     grid_sizes = inputs.get("grid_sizes", None)
     merge_sizes = inputs.get("merge_sizes", None)
@@ -133,7 +162,18 @@ def frame_to_frame(video_attn, frame_ids, num_frames):
     return result
 
 
-def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames):
+def question_to_frame(q_to_v_attn, frame_ids, num_frames):
+    # q_to_v_attn: [H, Nq, Nv] — attention from question tokens to video tokens
+    # returns: [H, T] — mean attention per head per frame
+    result = torch.zeros(q_to_v_attn.shape[0], num_frames, dtype=torch.float32)
+    for k_frame in range(num_frames):
+        k_mask = frame_ids == k_frame
+        if k_mask.any():
+            result[:, k_frame] = q_to_v_attn[:, :, k_mask].mean(dim=(1, 2)).float()
+    return result
+
+
+def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames, question_indices=None):
     """Hook-based attention capture: only target layers are processed, full tensors freed immediately."""
     if not hasattr(model, "model") or not hasattr(model.model, "layers"):
         raise RuntimeError("Model does not expose model.model.layers; cannot use hook-based attention capture.")
@@ -142,6 +182,7 @@ def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_
     hooks = []
     orig_forwards = {}
     video_idx_cpu = video_indices.cpu()
+    q_idx_cpu = question_indices.cpu() if (question_indices is not None and question_indices.numel() > 0) else None
 
     for layer_idx in layer_indices:
         self_attn = model.model.layers[layer_idx].self_attn
@@ -160,7 +201,16 @@ def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_
                     attn = out[1][0].detach().float()
                     v_attn = attn[:, video_idx_cpu][:, :, video_idx_cpu].cpu()
                     f_attn = frame_to_frame(v_attn, frame_ids, num_frames)
-                    captured[idx] = (v_attn, f_attn, int(attn.shape[0]))
+                    q_frame_attn = None
+                    if q_idx_cpu is not None:
+                        q_to_v = attn[:, q_idx_cpu][:, :, video_idx_cpu].cpu()
+                        q_frame_attn = question_to_frame(q_to_v, frame_ids, num_frames)
+                    captured[idx] = {
+                        "video_attn": v_attn,
+                        "frame_attn": f_attn,
+                        "num_heads": int(attn.shape[0]),
+                        "q_to_frame": q_frame_attn,
+                    }
                 return (out[0], None) + out[2:]
             return _hook
 
@@ -238,11 +288,14 @@ def main():
         inputs.setdefault("modals", ["video"])
 
         video_indices = get_video_indices(inputs, model).to(device)
+        question_indices = get_question_indices(inputs, model)
         frame_ids, num_frames = get_frame_ids(inputs, int(video_indices.numel()))
         num_layers = len(model.model.layers)
         layers = parse_layers(args.layers, num_layers)
 
-        captured = collect_video_attentions(model, inputs, layers, video_indices, frame_ids, num_frames)
+        captured = collect_video_attentions(
+            model, inputs, layers, video_indices, frame_ids, num_frames, question_indices
+        )
         heads_to_save = None
 
         meta = {
@@ -258,7 +311,12 @@ def main():
         }
 
         for layer_idx in layers:
-            video_attn, frame_attn, num_heads = captured[layer_idx]
+            data = captured[layer_idx]
+            video_attn = data["video_attn"]
+            frame_attn = data["frame_attn"]
+            num_heads = data["num_heads"]
+            q_to_frame = data["q_to_frame"]
+
             if heads_to_save is None:
                 heads_to_save = parse_heads(args.heads, num_heads)
                 meta["num_heads"] = num_heads
@@ -290,6 +348,23 @@ def main():
                     f"Layer {layer_idx} head {head_idx} frame-to-frame self attention",
                     "key frame",
                     "query frame",
+                )
+
+            if q_to_frame is not None:
+                np.save(sample_dir / f"layer_{layer_idx:02d}_q_to_frame_heads.npy", q_to_frame.numpy())
+                save_heatmap(
+                    q_to_frame.numpy(),
+                    sample_dir / f"layer_{layer_idx:02d}_q_to_frame_per_head.png",
+                    f"Layer {layer_idx} question→frame attention (per head)",
+                    "frame",
+                    "head",
+                )
+                save_bar_chart(
+                    q_to_frame.mean(dim=0).numpy(),
+                    sample_dir / f"layer_{layer_idx:02d}_heads_mean_q_to_frame.png",
+                    f"Layer {layer_idx} question→frame attention (heads mean)",
+                    "frame",
+                    "attention",
                 )
 
         with (sample_dir / "meta.json").open("w", encoding="utf-8") as f:
