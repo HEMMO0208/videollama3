@@ -35,9 +35,6 @@ extra_args=()
 if [[ -n "${LAYERS:-}" ]]; then
   extra_args+=(--layers "$LAYERS")
 fi
-if [[ -n "${HEADS:-}" ]]; then
-  extra_args+=(--heads "$HEADS")
-fi
 
 "$PYTHON_BIN" scripts/nextqa/visualize_nextqa_video_self_attn.py \
   --model-path "$MODEL_PATH" \
@@ -45,7 +42,7 @@ fi
   --data-folder "$DATA_FOLDER" \
   --output-dir "$OUTPUT_DIR" \
   --fps "${FPS:-1}" \
-  --max-frames "${MAX_FRAMES:-100}" \
+  --max-frames "${MAX_FRAMES:-32}" \
   --limit "${LIMIT:-10}" \
   --attn-implementation "${ATTN_IMPLEMENTATION:-eager}" \
   "${extra_args[@]}"

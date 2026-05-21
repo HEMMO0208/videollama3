@@ -8,8 +8,11 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from PIL import Image
 from tqdm import tqdm
 
 sys.path.append("./")
@@ -27,33 +30,6 @@ from videollama3 import disable_torch_init
 
 def move_to_device(inputs, device):
     return {k: v.to(device=device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-
-
-def save_heatmap(matrix, path, title, xlabel, ylabel):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    plt.figure(figsize=(8, 7))
-    plt.imshow(matrix, aspect="auto", cmap="magma")
-    plt.colorbar(label="attention")
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
-    plt.close()
-
-
-def save_bar_chart(values, path, title, xlabel, ylabel):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(max(6, len(values) * 0.35), 4))
-    ax.bar(range(len(values)), values)
-    ax.set_xticks(range(len(values)))
-    ax.set_xticklabels(range(len(values)), fontsize=7)
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
-    plt.close()
 
 
 def parse_layers(layer_spec, num_layers):
@@ -81,25 +57,6 @@ def parse_layers(layer_spec, num_layers):
             raise ValueError(f"Layer index {item} is out of range for {num_layers} layers")
         layers.append(idx)
     return layers
-
-
-def parse_heads(head_spec, num_heads):
-    if head_spec == "none":
-        return []
-    if head_spec == "all":
-        return list(range(num_heads))
-    heads = []
-    for item in head_spec.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        idx = int(item)
-        if idx < 0:
-            idx = num_heads + idx
-        if idx < 0 or idx >= num_heads:
-            raise ValueError(f"Head index {item} is out of range for {num_heads} heads")
-        heads.append(idx)
-    return heads
 
 
 def get_video_indices(inputs, model):
@@ -130,23 +87,20 @@ def get_frame_ids(inputs, num_video_tokens):
     return frame_ids, num_frames
 
 
-def frame_to_frame(video_attn, frame_ids, num_frames):
-    # video_attn: [H, Nv, Nv]
-    result = torch.zeros(video_attn.shape[0], num_frames, num_frames, dtype=torch.float32)
-    for q_frame in range(num_frames):
-        q_mask = frame_ids == q_frame
-        if not q_mask.any():
-            continue
-        for k_frame in range(num_frames):
-            k_mask = frame_ids == k_frame
-            if not k_mask.any():
-                continue
-            result[:, q_frame, k_frame] = video_attn[:, q_mask][:, :, k_mask].mean(dim=(1, 2)).float()
-    return result
+def get_grid_shape(inputs):
+    """Return (grid_h, grid_w) spatial token grid for the first video."""
+    grid_sizes = inputs.get("grid_sizes", None)
+    merge_sizes = inputs.get("merge_sizes", None)
+    if grid_sizes is None or merge_sizes is None or len(grid_sizes) == 0:
+        return None, None
+    grid_size = grid_sizes[0].detach().cpu()
+    merge_size = int(merge_sizes[0].detach().cpu().item())
+    t, h, w = [int(x) for x in grid_size.tolist()]
+    return h // merge_size, w // merge_size
 
 
-def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames):
-    """Hook-based attention capture: only target layers are processed, full tensors freed immediately."""
+def collect_spatial_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames, grid_h, grid_w):
+    """Hook-based capture: per-layer, per-frame spatial attention map (received attention, heads mean)."""
     if not hasattr(model, "model") or not hasattr(model.model, "layers"):
         raise RuntimeError("Model does not expose model.model.layers; cannot use hook-based attention capture.")
 
@@ -169,10 +123,18 @@ def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_
         def _make_hook(idx):
             def _hook(module, inp, out):
                 if out[1] is not None:
-                    attn = out[1][0].detach().float()
-                    v_attn = attn[:, video_idx_cpu][:, :, video_idx_cpu].cpu()
-                    f_attn = frame_to_frame(v_attn, frame_ids, num_frames)
-                    captured[idx] = (v_attn, f_attn, int(attn.shape[0]))
+                    attn = out[1][0].detach().float()                       # [H, N, N]
+                    v_attn = attn[:, video_idx_cpu][:, :, video_idx_cpu].cpu()  # [H, Nv, Nv]
+                    spatial_maps = []
+                    for f in range(num_frames):
+                        f_mask = frame_ids == f
+                        if not f_mask.any():
+                            spatial_maps.append(np.zeros((grid_h, grid_w), dtype=np.float32))
+                            continue
+                        # attention received by each token in frame f, averaged over all video queries and heads
+                        received = v_attn[:, :, f_mask].mean(dim=(0, 1)).numpy()  # [Nf]
+                        spatial_maps.append(received.reshape(grid_h, grid_w))
+                    captured[idx] = spatial_maps
                 return (out[0], None) + out[2:]
             return _hook
 
@@ -195,6 +157,62 @@ def collect_video_attentions(model, inputs, layer_indices, video_indices, frame_
     return captured
 
 
+def load_video_frames(processor, video_path, fps, max_frames):
+    """Load raw video frames as a list of PIL Images."""
+    if hasattr(processor, "load_video"):
+        frames, _ = processor.load_video(video_path, fps=fps, max_frames=max_frames)
+        return [to_pil(f) for f in frames]
+    import imageio
+    reader = imageio.get_reader(video_path)
+    video_fps = reader.get_meta_data().get("fps", 1)
+    step = max(1, round(video_fps / fps))
+    frames = []
+    for i, frame in enumerate(reader):
+        if i % step == 0:
+            frames.append(Image.fromarray(frame).convert("RGB"))
+            if len(frames) >= max_frames:
+                break
+    reader.close()
+    return frames
+
+
+def to_pil(frame):
+    if isinstance(frame, Image.Image):
+        return frame.convert("RGB")
+    arr = np.array(frame) if not isinstance(frame, np.ndarray) else frame
+    if arr.dtype != np.uint8:
+        arr = (arr * 255).clip(0, 255).astype(np.uint8) if arr.max() <= 1.0 else arr.astype(np.uint8)
+    return Image.fromarray(arr).convert("RGB")
+
+
+def save_raw_frame(frame_pil, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame_pil.save(str(path))
+
+
+def save_overlay(frame_pil, attn_map, path, title):
+    """Save frame image with spatial attention heatmap overlaid."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    w, h = frame_pil.size
+    frame_np = np.array(frame_pil) / 255.0  # [H, W, 3]
+
+    attn_resized = np.array(
+        Image.fromarray(attn_map.astype(np.float32)).resize((w, h), Image.BILINEAR)
+    )
+    vmin, vmax = attn_resized.min(), attn_resized.max()
+    attn_norm = (attn_resized - vmin) / (vmax - vmin + 1e-8)
+
+    attn_colored = cm.jet(attn_norm)[:, :, :3]
+    overlay = np.clip(0.5 * frame_np + 0.5 * attn_colored, 0, 1)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.imshow(overlay)
+    ax.axis("off")
+    ax.set_title(title, fontsize=9)
+    plt.tight_layout()
+    plt.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close()
+
 
 def record_question(record):
     human = next(message for message in record["conversations"] if message["from"] == "human")
@@ -213,7 +231,6 @@ def main():
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--attn-implementation", default="eager")
     parser.add_argument("--layers", default="spread:5")
-    parser.add_argument("--heads", default="none")
     args = parser.parse_args()
 
     disable_torch_init()
@@ -234,6 +251,8 @@ def main():
         sample_dir = output_dir / f"{sample_idx:04d}_{record.get('id', 'sample')}"
         sample_dir.mkdir(parents=True, exist_ok=True)
         video_path = resolve_video_path(record, args.data_folder)
+
+        frames = load_video_frames(processor, video_path, args.fps, args.max_frames)
         inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames)
         inputs = move_to_device(inputs, device)
         if "pixel_values" in inputs:
@@ -242,11 +261,29 @@ def main():
 
         video_indices = get_video_indices(inputs, model).to(device)
         frame_ids, num_frames = get_frame_ids(inputs, int(video_indices.numel()))
+        grid_h, grid_w = get_grid_shape(inputs)
+        if grid_h is None:
+            grid_h, grid_w = 1, int(video_indices.numel())
         num_layers = len(model.model.layers)
         layers = parse_layers(args.layers, num_layers)
 
-        captured = collect_video_attentions(model, inputs, layers, video_indices, frame_ids, num_frames)
-        heads_to_save = None
+        captured = collect_spatial_attentions(
+            model, inputs, layers, video_indices, frame_ids, num_frames, grid_h, grid_w
+        )
+
+        num_vis_frames = min(num_frames, len(frames))
+        for f in range(num_vis_frames):
+            save_raw_frame(frames[f], sample_dir / f"raw_frame_{f:02d}.png")
+
+        for layer_idx in layers:
+            spatial_maps = captured[layer_idx]
+            for f in range(num_vis_frames):
+                save_overlay(
+                    frames[f],
+                    spatial_maps[f],
+                    sample_dir / f"layer_{layer_idx:02d}_frame_{f:02d}.png",
+                    f"L{layer_idx} frame {f}",
+                )
 
         meta = {
             "id": record.get("id"),
@@ -257,42 +294,10 @@ def main():
             "question_type": record.get("metadata", {}).get("question_type", ""),
             "num_video_tokens": int(video_indices.numel()),
             "num_frames": int(num_frames),
+            "grid_h": grid_h,
+            "grid_w": grid_w,
             "layers": layers,
         }
-
-        for layer_idx in layers:
-            video_attn, frame_attn, num_heads = captured[layer_idx]
-            if heads_to_save is None:
-                heads_to_save = parse_heads(args.heads, num_heads)
-                meta["num_heads"] = num_heads
-                meta["saved_heads"] = heads_to_save
-
-            mean_frame = frame_attn.mean(dim=0).numpy()  # [T, T]
-
-            save_heatmap(
-                mean_frame,
-                sample_dir / f"layer_{layer_idx:02d}_heads_mean_frame_to_frame.png",
-                f"Layer {layer_idx} frame-to-frame self attention (heads mean)",
-                "key frame",
-                "query frame",
-            )
-            for f in range(num_frames):
-                save_bar_chart(
-                    mean_frame[f],
-                    sample_dir / f"layer_{layer_idx:02d}_frame_{f:02d}.png",
-                    f"Layer {layer_idx} frame {f} → frames (heads mean)",
-                    "key frame",
-                    "attention",
-                )
-            for head_idx in heads_to_save:
-                save_heatmap(
-                    frame_attn[head_idx].numpy(),
-                    sample_dir / f"layer_{layer_idx:02d}_head_{head_idx:02d}_frame_to_frame.png",
-                    f"Layer {layer_idx} head {head_idx} frame-to-frame self attention",
-                    "key frame",
-                    "query frame",
-                )
-
         with (sample_dir / "meta.json").open("w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
         index.append({"sample_dir": str(sample_dir), **meta})
