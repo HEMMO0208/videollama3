@@ -49,6 +49,14 @@ def parse_layers(layer_spec, num_layers):
         return [num_layers - 1]
     if layer_spec == "all":
         return list(range(num_layers))
+    if layer_spec.startswith("spread:"):
+        n = int(layer_spec[7:])
+        if n <= 0:
+            raise ValueError("spread:N requires N > 0")
+        if n >= num_layers:
+            return list(range(num_layers))
+        indices = [round(i * (num_layers - 1) / (n - 1)) for i in range(n)] if n > 1 else [num_layers - 1]
+        return sorted(set(indices))
     layers = []
     for item in layer_spec.split(","):
         item = item.strip()
@@ -150,8 +158,8 @@ def main():
     parser.add_argument("--max-frames", type=int, default=100)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--attn-implementation", default="eager")
-    parser.add_argument("--layers", default="last")
-    parser.add_argument("--heads", default="0")
+    parser.add_argument("--layers", default="spread:5")
+    parser.add_argument("--heads", default="none")
     parser.add_argument("--max-token-plot", type=int, default=512)
     args = parser.parse_args()
 
@@ -177,6 +185,7 @@ def main():
         inputs = move_to_device(inputs, device)
         if "pixel_values" in inputs:
             inputs["pixel_values"] = inputs["pixel_values"].to(dtype=torch.bfloat16)
+        inputs.setdefault("modals", ["video"])
 
         with torch.inference_mode():
             outputs = model(
