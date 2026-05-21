@@ -47,7 +47,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --fps 1 \
     --max_frames 120 \
     --model_max_length 16384 \
-    --mm_max_length 16384 \
+    --mm_max_length 10240 \
     --use_batch_flattening False \
     --use_token_compression True \
     --diffusion_enable True \
