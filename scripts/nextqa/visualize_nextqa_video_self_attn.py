@@ -157,14 +157,11 @@ def collect_spatial_attentions(model, inputs, layer_indices, video_indices, fram
     return captured
 
 
-def load_video_frames(processor, video_path, fps, max_frames):
-    """Load raw video frames as a list of PIL Images."""
-    if hasattr(processor, "load_video"):
-        frames, _ = processor.load_video(video_path, fps=fps, max_frames=max_frames)
-        return [to_pil(f) for f in frames]
+def load_video_frames(video_path, fps, max_frames):
+    """Load raw video frames as a list of PIL Images via imageio."""
     import imageio
     reader = imageio.get_reader(video_path)
-    video_fps = reader.get_meta_data().get("fps", 1)
+    video_fps = reader.get_meta_data().get("fps", fps)
     step = max(1, round(video_fps / fps))
     frames = []
     for i, frame in enumerate(reader):
@@ -174,15 +171,6 @@ def load_video_frames(processor, video_path, fps, max_frames):
                 break
     reader.close()
     return frames
-
-
-def to_pil(frame):
-    if isinstance(frame, Image.Image):
-        return frame.convert("RGB")
-    arr = np.array(frame) if not isinstance(frame, np.ndarray) else frame
-    if arr.dtype != np.uint8:
-        arr = (arr * 255).clip(0, 255).astype(np.uint8) if arr.max() <= 1.0 else arr.astype(np.uint8)
-    return Image.fromarray(arr).convert("RGB")
 
 
 def save_raw_frame(frame_pil, path):
@@ -252,7 +240,7 @@ def main():
         sample_dir.mkdir(parents=True, exist_ok=True)
         video_path = resolve_video_path(record, args.data_folder)
 
-        frames = load_video_frames(processor, video_path, args.fps, args.max_frames)
+        frames = load_video_frames(video_path, args.fps, args.max_frames)
         inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames)
         inputs = move_to_device(inputs, device)
         if "pixel_values" in inputs:

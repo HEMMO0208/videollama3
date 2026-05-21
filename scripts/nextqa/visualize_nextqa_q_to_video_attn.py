@@ -145,7 +145,7 @@ def main():
         sample_dir.mkdir(parents=True, exist_ok=True)
         video_path = resolve_video_path(record, args.data_folder)
 
-        frames = load_video_frames(processor, video_path, args.fps, args.max_frames)
+        frames = load_video_frames(video_path, args.fps, args.max_frames)
         inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames)
         inputs = move_to_device(inputs, device)
         if "pixel_values" in inputs:
