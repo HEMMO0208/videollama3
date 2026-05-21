@@ -80,6 +80,48 @@ def _load_vision_encoder_from_checkpoint(enc, checkpoint_path):
         return False
 
 
+def _detect_vision_encoder_checkpoint_format(checkpoint_path):
+    """Return 'nested', 'flat', or 'missing' for vision encoder keys in a checkpoint."""
+    if checkpoint_path is None:
+        return "missing"
+    try:
+        import json
+        import torch
+
+        flat_prefix = "model.vision_encoder."
+        nested_prefix = "model.vision_encoder.vision_encoder."
+
+        def _classify_keys(keys):
+            has_nested = any(k.startswith(nested_prefix) for k in keys)
+            if has_nested:
+                return "nested"
+            has_flat = any(k.startswith(flat_prefix) for k in keys)
+            return "flat" if has_flat else "missing"
+
+        safe_single = os.path.join(checkpoint_path, "model.safetensors")
+        safe_index  = os.path.join(checkpoint_path, "model.safetensors.index.json")
+        bin_single  = os.path.join(checkpoint_path, "pytorch_model.bin")
+        bin_index   = os.path.join(checkpoint_path, "pytorch_model.bin.index.json")
+
+        if os.path.exists(safe_single):
+            from safetensors.torch import safe_open
+            with safe_open(safe_single, framework="pt", device="cpu") as f:
+                return _classify_keys(f.keys())
+        if os.path.exists(safe_index):
+            with open(safe_index, "r", encoding="utf-8") as f:
+                idx = json.load(f)
+            return _classify_keys(idx.get("weight_map", {}).keys())
+        if os.path.exists(bin_single):
+            return _classify_keys(torch.load(bin_single, map_location="cpu").keys())
+        if os.path.exists(bin_index):
+            with open(bin_index, "r", encoding="utf-8") as f:
+                idx = json.load(f)
+            return _classify_keys(idx.get("weight_map", {}).keys())
+    except Exception:
+        return "missing"
+    return "missing"
+
+
 def spatial_downsampling(features, grid_thws, stride=2):
     n, c = features.shape
 
@@ -139,10 +181,17 @@ class Videollama3MetaModel:
             # The encoder was built during __init__ but HF's from_pretrained skips
             # its weights because the checkpoint uses flat keys (model.vision_encoder.X)
             # while our wrapper expects nested keys (model.vision_encoder.vision_encoder.X).
-            # Reload the encoder weights directly from the checkpoint with key remapping.
+            # Reload with key remapping only for those flat checkpoints. Fine-tuned
+            # local checkpoints are saved with nested keys and are already handled by
+            # from_pretrained().
             enc = self.vision_encoder[0] if (fsdp is not None and len(fsdp) > 0) else self.vision_encoder
             checkpoint_path = getattr(model_args, 'model_path', None)
-            if not _load_vision_encoder_from_checkpoint(enc, checkpoint_path):
+            checkpoint_format = _detect_vision_encoder_checkpoint_format(checkpoint_path)
+            if checkpoint_format == "flat":
+                if not _load_vision_encoder_from_checkpoint(enc, checkpoint_path):
+                    if hasattr(enc, 'load_model'):
+                        enc.load_model(model_args)
+            elif checkpoint_format == "missing":
                 # Fallback: load fresh weights from HF hub (loses fine-tuning)
                 if hasattr(enc, 'load_model'):
                     enc.load_model(model_args)
