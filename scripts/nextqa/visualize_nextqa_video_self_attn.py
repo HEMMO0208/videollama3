@@ -99,6 +99,36 @@ def get_grid_shape(inputs):
     return h // merge_size, w // merge_size
 
 
+def _build_compression_info(model, inputs, video_idx_cpu, frame_ids, grid_h, grid_w):
+    """Return a dict with the info needed to map compressed video tokens to spatial positions."""
+    n_original = inputs["input_ids"].shape[1]
+    p = int(video_idx_cpu[0].item())
+    n_v = video_idx_cpu.numel()
+    n_after = n_original - (p + n_v)
+    tokens_per_frame = grid_h * grid_w
+
+    use_compression = getattr(model.config, "use_token_compression", False)
+    if use_compression and hasattr(model.model, "_get_compression_mask"):
+        gs = inputs["grid_sizes"].cpu()
+        ms = inputs["merge_sizes"].cpu()
+        pv = inputs["pixel_values"].float()
+        bnp = gs.prod(dim=1).div(ms ** 2).long()
+        comp_mask = model.model._get_compression_mask(pv, bnp, gs, ms, inputs["modals"]).cpu()
+        kept_orig = torch.where(comp_mask)[0]          # indices of kept tokens in [0, N_v)
+        kept_frame_ids = kept_orig // tokens_per_frame
+        kept_spatial_ids = kept_orig % tokens_per_frame
+    else:
+        kept_frame_ids = frame_ids
+        kept_spatial_ids = torch.arange(n_v, dtype=torch.long) % tokens_per_frame
+
+    return {
+        "p": p,
+        "n_after": n_after,
+        "kept_frame_ids": kept_frame_ids,
+        "kept_spatial_ids": kept_spatial_ids,
+    }
+
+
 def collect_spatial_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames, grid_h, grid_w):
     """Hook-based capture: per-layer, per-frame spatial attention map (received attention, heads mean)."""
     if not hasattr(model, "model") or not hasattr(model.model, "layers"):
@@ -108,6 +138,7 @@ def collect_spatial_attentions(model, inputs, layer_indices, video_indices, fram
     hooks = []
     orig_forwards = {}
     video_idx_cpu = video_indices.cpu()
+    cinfo = _build_compression_info(model, inputs, video_idx_cpu, frame_ids, grid_h, grid_w)
 
     for layer_idx in layer_indices:
         self_attn = model.model.layers[layer_idx].self_attn
@@ -123,17 +154,26 @@ def collect_spatial_attentions(model, inputs, layer_indices, video_indices, fram
         def _make_hook(idx):
             def _hook(module, inp, out):
                 if out[1] is not None:
-                    attn = out[1][0].detach().float()                       # [H, N, N]
-                    v_attn = attn[:, video_idx_cpu][:, :, video_idx_cpu].cpu()  # [H, Nv, Nv]
+                    attn = out[1][0].detach().float()   # [H, N, N]
+                    n = attn.shape[1]
+                    v_start = cinfo["p"]
+                    n_v_c = n - v_start - cinfo["n_after"]
+                    if n_v_c <= 0:
+                        return (out[0], None) + out[2:]
+                    v_end = v_start + n_v_c
+                    v_attn = attn[:, v_start:v_end, v_start:v_end].cpu()   # [H, Nvc, Nvc]
+                    kept_fids = cinfo["kept_frame_ids"][:n_v_c]
+                    kept_sids = cinfo["kept_spatial_ids"][:n_v_c].numpy()
                     spatial_maps = []
                     for f in range(num_frames):
-                        f_mask = frame_ids == f
+                        f_mask = (kept_fids == f)
                         if not f_mask.any():
                             spatial_maps.append(np.zeros((grid_h, grid_w), dtype=np.float32))
                             continue
-                        # attention received by each token in frame f, averaged over all video queries and heads
-                        received = v_attn[:, :, f_mask].mean(dim=(0, 1)).numpy()  # [Nf]
-                        spatial_maps.append(received.reshape(grid_h, grid_w))
+                        received = v_attn[:, :, f_mask].mean(dim=(0, 1)).numpy()
+                        sm = np.zeros(grid_h * grid_w, dtype=np.float32)
+                        sm[kept_sids[f_mask.numpy()]] = received
+                        spatial_maps.append(sm.reshape(grid_h, grid_w))
                     captured[idx] = spatial_maps
                 return (out[0], None) + out[2:]
             return _hook

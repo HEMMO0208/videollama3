@@ -21,6 +21,7 @@ from scripts.nextqa.infer_nextqa_jsonl import (
     resolve_video_path,
 )
 from scripts.nextqa.visualize_nextqa_video_self_attn import (
+    _build_compression_info,
     get_frame_ids,
     get_grid_shape,
     get_video_indices,
@@ -36,11 +37,7 @@ from videollama3 import disable_torch_init
 
 
 def collect_q_to_spatial_attentions(model, inputs, layer_indices, video_indices, frame_ids, num_frames, grid_h, grid_w):
-    """Hook-based capture: per-layer, per-frame spatial attention map (question→video, heads mean).
-
-    Question indices are derived *inside* the hook from the actual sequence length and
-    the valid video positions after any compression/truncation, so they are always in bounds.
-    """
+    """Hook-based capture: per-layer, per-frame spatial attention map (question→video, heads mean)."""
     if not hasattr(model, "model") or not hasattr(model.model, "layers"):
         raise RuntimeError("Model does not expose model.model.layers; cannot use hook-based attention capture.")
 
@@ -48,6 +45,7 @@ def collect_q_to_spatial_attentions(model, inputs, layer_indices, video_indices,
     hooks = []
     orig_forwards = {}
     video_idx_cpu = video_indices.cpu()
+    cinfo = _build_compression_info(model, inputs, video_idx_cpu, frame_ids, grid_h, grid_w)
 
     for layer_idx in layer_indices:
         self_attn = model.model.layers[layer_idx].self_attn
@@ -66,29 +64,27 @@ def collect_q_to_spatial_attentions(model, inputs, layer_indices, video_indices,
                     import numpy as np
                     attn = out[1][0].detach().float()   # [H, N, N]
                     n = attn.shape[1]
-
-                    # clip video indices to actual sequence length (handles compression/truncation)
-                    v_valid = video_idx_cpu[video_idx_cpu < n]
-                    if v_valid.numel() == 0:
+                    v_start = cinfo["p"]
+                    n_v_c = n - v_start - cinfo["n_after"]
+                    if n_v_c <= 0:
+                        return (out[0], None) + out[2:]
+                    q_start = v_start + n_v_c
+                    if q_start >= n:
                         return (out[0], None) + out[2:]
 
-                    # question tokens = everything after the last video token in the actual sequence
-                    last_v = int(v_valid.max().item())
-                    q_indices = torch.arange(last_v + 1, n, dtype=torch.long)
-                    if q_indices.numel() == 0:
-                        return (out[0], None) + out[2:]
-
-                    q_to_v = attn[:, q_indices][:, :, v_valid].cpu()   # [H, Nq, Nv]
+                    q_to_v = attn[:, q_start:n, v_start:v_start + n_v_c].cpu()   # [H, Nq, Nvc]
+                    kept_fids = cinfo["kept_frame_ids"][:n_v_c]
+                    kept_sids = cinfo["kept_spatial_ids"][:n_v_c].numpy()
                     spatial_maps = []
                     for f in range(num_frames):
-                        f_mask = frame_ids == f
-                        # also clip frame mask to v_valid length
-                        f_mask_valid = f_mask[:v_valid.numel()]
-                        if not f_mask_valid.any():
+                        f_mask = (kept_fids == f)
+                        if not f_mask.any():
                             spatial_maps.append(np.zeros((grid_h, grid_w), dtype=np.float32))
                             continue
-                        received = q_to_v[:, :, f_mask_valid].mean(dim=(0, 1)).numpy()  # [Nf]
-                        spatial_maps.append(received.reshape(grid_h, grid_w))
+                        received = q_to_v[:, :, f_mask].mean(dim=(0, 1)).numpy()
+                        sm = np.zeros(grid_h * grid_w, dtype=np.float32)
+                        sm[kept_sids[f_mask.numpy()]] = received
+                        spatial_maps.append(sm.reshape(grid_h, grid_w))
                     captured[idx] = spatial_maps
                 return (out[0], None) + out[2:]
             return _hook
