@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vllama3-diff-nextqa
+#SBATCH --job-name=vllama3-diff-pre-nextqa
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:a6000:4
@@ -28,8 +28,9 @@ export MODEL_PATH="${MODEL_PATH:-checkpoints/VideoLLaMA3-2B}"
 export DATA_FOLDER="${DATA_FOLDER:-/home/hmkang/project/tempo/dataset/NExTVideo}"
 export DATA_PATH="${DATA_PATH:-data/nextqa/train_sft.jsonl}"
 export MM_PIXEL_DECODER="${MM_PIXEL_DECODER:-pretrained_vae}"
-export PRETRAINED_DIFFUSION_HEAD="${PRETRAINED_DIFFUSION_HEAD:-work_dirs/nextqa_diffusion_pretrain/diffusion_head.bin}"
-export OUTPUT_DIR="${OUTPUT_DIR:-work_dirs/nextqa_diffusion}"
-export RUN_NAME="${RUN_NAME:-nextqa_diffusion}"
+export OUTPUT_DIR="${OUTPUT_DIR:-work_dirs/nextqa_diffusion_pretrain}"
+export RUN_NAME="${RUN_NAME:-nextqa_diffusion_pretrain}"
+export DIFFUSION_LR="${DIFFUSION_LR:-1e-4}"
+export PRETRAINED_DIFFUSION_HEAD="${PRETRAINED_DIFFUSION_HEAD:-}"
 
-bash /home/hmkang/init_ross.sh bash "$ROOT_DIR/scripts/nextqa/finetune_nextqa_diffusion.sh"
+bash /home/hmkang/init_ross.sh bash "$ROOT_DIR/scripts/nextqa/pretrain_nextqa_diffusion.sh"

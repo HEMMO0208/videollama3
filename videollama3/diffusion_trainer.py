@@ -2,6 +2,7 @@ import os
 from typing import Optional
 
 import torch
+from transformers import Trainer
 
 from videollama3.videollama3_trainer import VideoLLaMA3Trainer
 
@@ -12,12 +13,14 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         diffusion_head=None,
         vae=None,
         diffusion_loss_weight: float = 1.0,
+        diffusion_pretrain_only: bool = False,
         *args,
         **kwargs,
     ):
         self.diffusion_head = diffusion_head
         self.vae = vae
         self.diffusion_loss_weight = diffusion_loss_weight
+        self.diffusion_pretrain_only = diffusion_pretrain_only
         self._last_loss_logs = {}
         # Attach diffusion_head to the raw model BEFORE Trainer.__init__ so that
         # DeepSpeed's ZeRO optimizer includes its parameters in param_names when it
@@ -193,6 +196,38 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         return self._get_diffusion_head_module().diffusion_loss(restored_tokens, targets)
 
     def create_optimizer(self):
+        if self.diffusion_pretrain_only:
+            if self.optimizer is not None:
+                return self.optimizer
+            diffusion_head = self._get_diffusion_head_module()
+            if diffusion_head is None:
+                raise RuntimeError("Diffusion pretrain-only mode requires a diffusion head.")
+
+            decay, no_decay = [], []
+            for name, param in diffusion_head.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.ndim > 1 and "bias" not in name:
+                    decay.append(param)
+                else:
+                    no_decay.append(param)
+            if not decay and not no_decay:
+                raise RuntimeError("Diffusion pretrain-only mode found no trainable diffusion-head parameters.")
+
+            lr = (
+                getattr(self.args, "diffusion_lr", None)
+                or getattr(self.args, "mm_projector_lr", None)
+                or getattr(self.args, "learning_rate", 5e-5)
+            )
+            optimizer_grouped_parameters = []
+            if decay:
+                optimizer_grouped_parameters.append({"params": decay, "weight_decay": self.args.weight_decay, "lr": lr})
+            if no_decay:
+                optimizer_grouped_parameters.append({"params": no_decay, "weight_decay": 0.0, "lr": lr})
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+            self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+            return self.optimizer
+
         optimizer = super().create_optimizer()
         if self.diffusion_head is None or self.optimizer is None:
             return optimizer
@@ -205,7 +240,11 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
                 decay.append(param)
             else:
                 no_decay.append(param)
-        lr = getattr(self.args, "mm_projector_lr", None) or getattr(self.args, "learning_rate", 5e-5)
+        lr = (
+            getattr(self.args, "diffusion_lr", None)
+            or getattr(self.args, "mm_projector_lr", None)
+            or getattr(self.args, "learning_rate", 5e-5)
+        )
         if decay:
             self.optimizer.add_param_group({"params": decay, "weight_decay": self.args.weight_decay, "lr": lr})
         if no_decay:
@@ -216,10 +255,21 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
         diffusion_images = inputs.pop("diffusion_images", None)
         diffusion_chunk_masks = inputs.pop("diffusion_chunk_masks", None)
         forward_kwargs = dict(**inputs, output_hidden_states=True, use_cache=False)
+        if self.diffusion_pretrain_only:
+            forward_kwargs.pop("labels", None)
         if num_items_in_batch is not None:
             forward_kwargs["num_items_in_batch"] = num_items_in_batch
-        outputs = model(**forward_kwargs)
-        total_loss = outputs.loss
+        if self.diffusion_pretrain_only:
+            model.eval()
+            diffusion_head = self._get_diffusion_head_module()
+            if diffusion_head is not None:
+                diffusion_head.train()
+            with torch.no_grad():
+                outputs = model(**forward_kwargs)
+            total_loss = None
+        else:
+            outputs = model(**forward_kwargs)
+            total_loss = outputs.loss
         loss_logs = {}
         if total_loss is not None:
             loss_logs["lm_loss"] = total_loss.detach().float().item()
@@ -230,6 +280,8 @@ class VideoLLaMA3DiffusionTrainer(VideoLLaMA3Trainer):
                 loss_logs["diffusion_loss"] = diffusion_loss.detach().float().item()
                 loss_logs["diffusion_loss_scaled"] = diffusion_term.detach().float().item()
                 total_loss = diffusion_term if total_loss is None else total_loss + diffusion_term
+        if self.diffusion_pretrain_only and total_loss is None:
+            raise RuntimeError("Diffusion pretrain-only mode did not produce a diffusion loss for this batch.")
         self._last_loss_logs = loss_logs
         outputs.loss = total_loss
         return (total_loss, outputs) if return_outputs else total_loss

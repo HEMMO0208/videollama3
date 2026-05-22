@@ -21,11 +21,13 @@ LOCAL_BATCH_SIZE=${LOCAL_BATCH_SIZE:-1}
 GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-$((GLOBAL_BATCH_SIZE/(WORLD_SIZE*NPROC_PER_NODE*LOCAL_BATCH_SIZE)))}
 
 MODEL_PATH=${MODEL_PATH:-work_dirs/videollama3_qwen2.5_2b/stage_3}
+VISION_ENCODER=${VISION_ENCODER:-DAMO-NLP-SG/SigLIP-NaViT}
 DATA_FOLDER=${DATA_FOLDER:-../Tempo/dataset/nextqa/NExTVideo}
 DATA_PATH=${DATA_PATH:-data/nextqa/train_sft.jsonl}
-OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/nextqa_diffusion}
-RUN_NAME=${RUN_NAME:-nextqa_diffusion}
+OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/nextqa_diffusion_pretrain}
+RUN_NAME=${RUN_NAME:-nextqa_diffusion_pretrain}
 MM_PIXEL_DECODER=${MM_PIXEL_DECODER:?Set MM_PIXEL_DECODER to the ross VAE checkpoint path}
+DIFFUSION_LR=${DIFFUSION_LR:-1e-4}
 PRETRAINED_DIFFUSION_HEAD=${PRETRAINED_DIFFUSION_HEAD:-}
 
 EXTRA_TRAIN_ARGS=()
@@ -44,7 +46,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --deepspeed "$ROOT_DIR/scripts/zero1.json" \
     --model_type videollama3_qwen2 \
     --model_path "$MODEL_PATH" \
-    --vision_encoder DAMO-NLP-SG/SigLIP-NaViT \
+    --vision_encoder "$VISION_ENCODER" \
     --mm_projector_type mlp2x_gelu \
     --data_path "$DATA_PATH" \
     --data_folder "$DATA_FOLDER" \
@@ -57,12 +59,14 @@ torchrun --nnodes "$WORLD_SIZE" \
     --use_batch_flattening False \
     --use_token_compression True \
     --diffusion_enable True \
+    --diffusion_pretrain_only True \
     --mm_pixel_decoder "$MM_PIXEL_DECODER" \
     --diffusion_chunk_size 4 \
     --diffusion_vae_image_size 384 \
     --diffusion_target_spatial 12 \
     --diffusion_loss_weight 1.0 \
     --diffusion_query_prob 1.0 \
+    --diffusion_lr "$DIFFUSION_LR" \
     "${EXTRA_TRAIN_ARGS[@]}" \
     --bf16 True \
     --tf32 True \
@@ -76,9 +80,6 @@ torchrun --nnodes "$WORLD_SIZE" \
     --save_strategy "steps" \
     --save_steps 500 \
     --save_total_limit 2 \
-    --llm_lr 1e-5 \
-    --mm_projector_lr 1e-5 \
-    --vision_encoder_lr 2e-6 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \

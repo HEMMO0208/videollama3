@@ -90,6 +90,49 @@ def int_with_none(value):
     return int(value)
 
 
+def resolve_diffusion_head_checkpoint(path: str) -> str:
+    ckpt_path = pathlib.Path(path)
+    if ckpt_path.is_dir():
+        direct = ckpt_path / "diffusion_head.bin"
+        if direct.exists():
+            return str(direct)
+        checkpoint_heads = []
+        for child in ckpt_path.glob("checkpoint-*"):
+            head_path = child / "diffusion_head.bin"
+            if head_path.exists():
+                match = re.match(r"checkpoint-(\d+)$", child.name)
+                step = int(match.group(1)) if match else -1
+                checkpoint_heads.append((step, head_path))
+        if checkpoint_heads:
+            return str(max(checkpoint_heads, key=lambda item: item[0])[1])
+        raise FileNotFoundError(
+            f"No diffusion_head.bin found in {ckpt_path} or its checkpoint-* subdirectories."
+        )
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Diffusion head checkpoint does not exist: {ckpt_path}")
+    return str(ckpt_path)
+
+
+def load_diffusion_head_checkpoint(diffusion_head, path: str):
+    ckpt_file = resolve_diffusion_head_checkpoint(path)
+    state = torch.load(ckpt_file, map_location="cpu")
+    if isinstance(state, dict):
+        for key in ("state_dict", "model", "module"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if not isinstance(state, dict):
+        raise TypeError(f"Expected a state dict in diffusion head checkpoint: {ckpt_file}")
+    if any(k.startswith("_diffusion_head.") for k in state.keys()):
+        state = {k.removeprefix("_diffusion_head."): v for k, v in state.items() if k.startswith("_diffusion_head.")}
+    missing, unexpected = diffusion_head.load_state_dict(state, strict=False)
+    rank0_print(f"Loaded pretrained diffusion head from {ckpt_file}")
+    if missing:
+        rank0_print(f"Missing diffusion-head keys: {missing}")
+    if unexpected:
+        rank0_print(f"Unexpected diffusion-head keys: {unexpected}")
+
+
 @dataclass
 class ModelArguments:
     # LLM Arguments
@@ -118,6 +161,10 @@ class ModelArguments:
     diffusion_target_spatial: int = field(default=12)
     causal_diffusion: bool = field(default=False)
     pretrained_diffusion_head: Optional[str] = field(default=None)
+    diffusion_pretrain_only: bool = field(
+        default=False,
+        metadata={"help": "Freeze the full LMM and optimize only the diffusion head with diffusion loss."},
+    )
 
 
 @dataclass
@@ -151,6 +198,7 @@ class TrainingArguments(transformers.TrainingArguments):
     vision_encoder_lr: Optional[float] = None
     mm_projector_lr: Optional[float] = None
     llm_lr: Optional[float] = None
+    diffusion_lr: Optional[float] = None
     # Training Data Arguments
     group_by_modality_length: bool = field(default=False)
     model_max_length: int = field(
@@ -534,6 +582,8 @@ def train(attn_implementation=None):
             "VideoLLaMA3 token compression requires batch_size=1 when diffusion supervision disables batch flattening. "
             "Set --per_device_train_batch_size 1 or --use_token_compression False."
         )
+    if model_args.diffusion_pretrain_only and not model_args.diffusion_enable:
+        raise ValueError("--diffusion_pretrain_only requires --diffusion_enable true")
 
     if local_rank == 0:
         print('------model args------')
@@ -604,6 +654,9 @@ def train(attn_implementation=None):
     model.config.use_cache = False
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
+    if model_args.diffusion_pretrain_only:
+        rank0_print("Diffusion pretrain-only mode: freezing the full LMM and optimizing only the diffusion head.")
+        model.requires_grad_(False)
 
     if training_args.bits in [4, 8]:
         from peft import prepare_model_for_kbit_training
@@ -694,6 +747,9 @@ def train(attn_implementation=None):
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False
 
+        if model_args.diffusion_pretrain_only:
+            model.requires_grad_(False)
+
         model.config.max_frames = getattr(data_args, 'max_frames', NUM_FRAMES)
         model.config.image_aspect_ratio = data_args.image_aspect_ratio if 'avt' not in model_args.vision_encoder else 'avt'
         model.config.diffusion_chunk_size = model_args.diffusion_chunk_size
@@ -763,9 +819,10 @@ def train(attn_implementation=None):
             latent_chunk_size=geometry.tokens_per_frame,
             causal=model_args.causal_diffusion,
         )
+        if model_args.diffusion_pretrain_only:
+            diffusion_head.requires_grad_(True)
         if model_args.pretrained_diffusion_head:
-            state = torch.load(model_args.pretrained_diffusion_head, map_location="cpu")
-            diffusion_head.load_state_dict(state, strict=False)
+            load_diffusion_head_checkpoint(diffusion_head, model_args.pretrained_diffusion_head)
         trainer = VideoLLaMA3DiffusionTrainer(
             model=model,
             tokenizer=tokenizer,
@@ -773,6 +830,7 @@ def train(attn_implementation=None):
             diffusion_head=diffusion_head,
             vae=vae,
             diffusion_loss_weight=model_args.diffusion_loss_weight,
+            diffusion_pretrain_only=model_args.diffusion_pretrain_only,
             **data_module,
         )
     else:
