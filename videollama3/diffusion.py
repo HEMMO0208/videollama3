@@ -206,9 +206,6 @@ class PrefixConditionedLatentDiffusion(nn.Module):
     def _build_attn_mask(self, cond_len: int, latent_len: int, device: torch.device) -> Optional[torch.Tensor]:
         if not self.causal:
             return None
-        cache_key = (cond_len, latent_len, device)
-        if getattr(self, "_attn_mask_cache", None) is not None and self._attn_mask_cache[0] == cache_key:
-            return self._attn_mask_cache[1]
         seq_len = cond_len + latent_len
         attn_mask = torch.zeros(seq_len, seq_len, device=device, dtype=torch.bool)
         if cond_len > 0:
@@ -218,7 +215,6 @@ class PrefixConditionedLatentDiffusion(nn.Module):
             for k_idx in range(latent_len):
                 if k_idx // self.latent_chunk_size > q_chunk:
                     attn_mask[cond_len + q_idx, cond_len + k_idx] = True
-        self._attn_mask_cache = (cache_key, attn_mask)
         return attn_mask
 
     def _prepare_condition(self, cond_tokens: torch.Tensor, cond_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -297,6 +293,17 @@ class MaskedVideoTokenDiffusion(nn.Module):
         self.final = nn.Linear(hidden_size, token_dim * (2 if learn_sigma else 1))
         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine", learn_sigma=learn_sigma)
         self.gen_diffusion = create_diffusion(timestep_respacing=timesteps, noise_schedule="cosine", learn_sigma=learn_sigma)
+
+        # seq_len = latent_chunk_size * num_chunks is fixed at construction time, so build once
+        num_tokens = max_latent_tokens
+        if causal:
+            mask = torch.zeros(num_tokens, num_tokens, dtype=torch.bool)
+            for q in range(num_tokens):
+                mask[q, (q // self.latent_chunk_size + 1) * self.latent_chunk_size :] = True
+            self.register_buffer("causal_attn_mask", mask, persistent=False)
+        else:
+            self.causal_attn_mask = None
+
         self._init_weights()
 
     def _init_weights(self):
@@ -307,21 +314,6 @@ class MaskedVideoTokenDiffusion(nn.Module):
                     nn.init.zeros_(module.bias)
         nn.init.normal_(self.mask_token, std=0.02)
         nn.init.normal_(self.pos_embed, std=0.02)
-
-    def _build_attn_mask(self, seq_len: int, device: torch.device) -> Optional[torch.Tensor]:
-        if not self.causal:
-            return None
-        cache_key = (seq_len, device)
-        if getattr(self, "_attn_mask_cache", None) is not None and self._attn_mask_cache[0] == cache_key:
-            return self._attn_mask_cache[1]
-        attn_mask = torch.zeros(seq_len, seq_len, device=device, dtype=torch.bool)
-        for q_idx in range(seq_len):
-            q_chunk = q_idx // self.latent_chunk_size
-            for k_idx in range(seq_len):
-                if k_idx // self.latent_chunk_size > q_chunk:
-                    attn_mask[q_idx, k_idx] = True
-        self._attn_mask_cache = (cache_key, attn_mask)
-        return attn_mask
 
     def restore_tokens(
         self,
@@ -349,7 +341,7 @@ class MaskedVideoTokenDiffusion(nn.Module):
         # q_sample uses float32 schedule buffers which promote x_t to float32; realign with model dtype
         x = x.to(dtype=self.latent_embed.weight.dtype)
         seq = self.cond_norm(cond_tokens) + self.latent_embed(x) + self.t_embedder(t).unsqueeze(1) + self.pos_embed[:, : x.shape[1]]
-        attn_mask = self._build_attn_mask(seq.shape[1], seq.device)
+        attn_mask = self.causal_attn_mask[:seq.shape[1], :seq.shape[1]] if self.causal_attn_mask is not None else None
         for block in self.blocks:
             seq = block(seq, attn_mask=attn_mask)
         seq = self.final(seq)
