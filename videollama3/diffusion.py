@@ -341,7 +341,7 @@ class MaskedVideoTokenDiffusion(nn.Module):
         # q_sample uses float32 schedule buffers which promote x_t to float32; realign with model dtype
         x = x.to(dtype=self.latent_embed.weight.dtype)
         seq = self.cond_norm(cond_tokens) + self.latent_embed(x) + self.t_embedder(t).unsqueeze(1) + self.pos_embed[:, : x.shape[1]]
-        attn_mask = self.causal_attn_mask[:seq.shape[1], :seq.shape[1]] if self.causal_attn_mask is not None else None
+        attn_mask = self.causal_attn_mask
         for block in self.blocks:
             seq = block(seq, attn_mask=attn_mask)
         seq = self.final(seq)
