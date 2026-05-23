@@ -24,7 +24,7 @@ export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── server-specific paths & settings ─────────────────────────────────────────
 export NPROC_PER_NODE=4
-export MODEL_PATH="${MODEL_PATH:-checkpoints/VideoLLaMA3-2B}"
+export MODEL_PATH="${MODEL_PATH:-checkpoints/VideoLLaMA3-2B-Image}"
 export DATA_FOLDER="${DATA_FOLDER:-/home/hmkang/project/tempo/dataset/NExTVideo}"
 export DATA_PATH="${DATA_PATH:-data/nextqa/train_sft.jsonl}"
 export OUTPUT_DIR="${OUTPUT_DIR:-work_dirs/nextqa_baseline}"
