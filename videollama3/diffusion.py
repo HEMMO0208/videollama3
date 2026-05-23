@@ -206,6 +206,9 @@ class PrefixConditionedLatentDiffusion(nn.Module):
     def _build_attn_mask(self, cond_len: int, latent_len: int, device: torch.device) -> Optional[torch.Tensor]:
         if not self.causal:
             return None
+        cache_key = (cond_len, latent_len, device)
+        if getattr(self, "_attn_mask_cache", None) is not None and self._attn_mask_cache[0] == cache_key:
+            return self._attn_mask_cache[1]
         seq_len = cond_len + latent_len
         attn_mask = torch.zeros(seq_len, seq_len, device=device, dtype=torch.bool)
         if cond_len > 0:
@@ -215,6 +218,7 @@ class PrefixConditionedLatentDiffusion(nn.Module):
             for k_idx in range(latent_len):
                 if k_idx // self.latent_chunk_size > q_chunk:
                     attn_mask[cond_len + q_idx, cond_len + k_idx] = True
+        self._attn_mask_cache = (cache_key, attn_mask)
         return attn_mask
 
     def _prepare_condition(self, cond_tokens: torch.Tensor, cond_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -307,12 +311,16 @@ class MaskedVideoTokenDiffusion(nn.Module):
     def _build_attn_mask(self, seq_len: int, device: torch.device) -> Optional[torch.Tensor]:
         if not self.causal:
             return None
+        cache_key = (seq_len, device)
+        if getattr(self, "_attn_mask_cache", None) is not None and self._attn_mask_cache[0] == cache_key:
+            return self._attn_mask_cache[1]
         attn_mask = torch.zeros(seq_len, seq_len, device=device, dtype=torch.bool)
         for q_idx in range(seq_len):
             q_chunk = q_idx // self.latent_chunk_size
             for k_idx in range(seq_len):
                 if k_idx // self.latent_chunk_size > q_chunk:
                     attn_mask[q_idx, k_idx] = True
+        self._attn_mask_cache = (cache_key, attn_mask)
         return attn_mask
 
     def restore_tokens(
