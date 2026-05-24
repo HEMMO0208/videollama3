@@ -20,16 +20,13 @@ GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-32}
 LOCAL_BATCH_SIZE=${LOCAL_BATCH_SIZE:-1}
 GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-$((GLOBAL_BATCH_SIZE/(WORLD_SIZE*NPROC_PER_NODE*LOCAL_BATCH_SIZE)))}
 
-# Fine-tune from the nextqa-trained diffusion checkpoint.
-# Diffusion head is already embedded in MODEL_PATH — PRETRAINED_DIFFUSION_HEAD
-# defaults to empty so no separate .bin is loaded.
-MODEL_PATH=${MODEL_PATH:-work_dirs/nextqa_diffusion}
+MODEL_PATH=${MODEL_PATH:-checkpoints/VideoLLaMA3-2B}
 DATA_FOLDER=${DATA_FOLDER:-/home/hmkang/project/videollama3/FAVOR/videos}
 DATA_PATH=${DATA_PATH:-data/favor/train_sft.jsonl}
 OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/favor_diffusion}
 RUN_NAME=${RUN_NAME:-favor_diffusion}
 MM_PIXEL_DECODER=${MM_PIXEL_DECODER:?Set MM_PIXEL_DECODER to the ross VAE checkpoint path}
-PRETRAINED_DIFFUSION_HEAD=${PRETRAINED_DIFFUSION_HEAD:-}
+PRETRAINED_DIFFUSION_HEAD=${PRETRAINED_DIFFUSION_HEAD:-work_dirs/nextqa_diffusion_pretrain/diffusion_head.bin}
 
 EXTRA_TRAIN_ARGS=()
 if [[ -n "$PRETRAINED_DIFFUSION_HEAD" ]]; then

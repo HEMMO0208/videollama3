@@ -20,8 +20,7 @@ GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-32}
 LOCAL_BATCH_SIZE=${LOCAL_BATCH_SIZE:-2}
 GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-$((GLOBAL_BATCH_SIZE/(WORLD_SIZE*NPROC_PER_NODE*LOCAL_BATCH_SIZE)))}
 
-# Fine-tune from the nextqa-trained baseline checkpoint
-MODEL_PATH=${MODEL_PATH:-work_dirs/nextqa_baseline}
+MODEL_PATH=${MODEL_PATH:-checkpoints/VideoLLaMA3-2B}
 DATA_FOLDER=${DATA_FOLDER:-/home/hmkang/project/videollama3/FAVOR/videos}
 DATA_PATH=${DATA_PATH:-data/favor/train_sft.jsonl}
 OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/favor_baseline}

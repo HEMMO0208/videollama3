@@ -24,11 +24,11 @@ export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── server-specific paths & settings ─────────────────────────────────────────
 export NPROC_PER_NODE=4
-export MODEL_PATH="${MODEL_PATH:-work_dirs/nextqa_causal_diffusion}"
+export MODEL_PATH="${MODEL_PATH:-checkpoints/VideoLLaMA3-2B}"
 export DATA_FOLDER="${DATA_FOLDER:-/home/hmkang/project/videollama3/FAVOR/videos}"
 export DATA_PATH="${DATA_PATH:-data/favor/train_sft.jsonl}"
 export MM_PIXEL_DECODER="${MM_PIXEL_DECODER:-pretrained_vae}"
-export PRETRAINED_DIFFUSION_HEAD="${PRETRAINED_DIFFUSION_HEAD:-}"
+export PRETRAINED_DIFFUSION_HEAD="${PRETRAINED_DIFFUSION_HEAD:-work_dirs/nextqa_diffusion_pretrain/diffusion_head.bin}"
 export OUTPUT_DIR="${OUTPUT_DIR:-work_dirs/favor_causal_diffusion}"
 export RUN_NAME="${RUN_NAME:-favor_causal_diffusion}"
 
