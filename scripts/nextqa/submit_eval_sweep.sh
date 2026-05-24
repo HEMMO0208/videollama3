@@ -7,11 +7,12 @@
 # Examples:
 #   ./scripts/nextqa/submit_eval_sweep.sh baseline 100
 #   ./scripts/nextqa/submit_eval_sweep.sh diffusion 8 16 32 64 100
+#   ./scripts/nextqa/submit_eval_sweep.sh causal_diffusion 8 16 32 64 100
 #   ./scripts/nextqa/submit_eval_sweep.sh all 8 16 32 64 100
 #   ./scripts/nextqa/submit_eval_sweep.sh all 8 16 32 64 100 -- --dependency=afterok:12345
 #   ./scripts/nextqa/submit_eval_sweep.sh baseline 32 64 -- --dependency=afterany:111,222 --mail-type=END
 #
-# <model_kind>  : baseline | diffusion | all
+# <model_kind>  : baseline | diffusion | causal_diffusion | all
 # <max_frames>  : one or more integer values
 # --            : everything after this is passed verbatim to sbatch
 
@@ -21,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ $# -lt 2 ]]; then
     echo "Usage: $0 <model_kind> <max_frames...> [-- <sbatch_args...>]"
-    echo "  model_kind : baseline | diffusion | all"
+    echo "  model_kind : baseline | diffusion | causal_diffusion | all"
     echo "  max_frames : one or more integers"
     exit 1
 fi
@@ -53,9 +54,10 @@ fi
 case "$MODEL_KIND" in
     baseline)  KINDS=(baseline) ;;
     diffusion) KINDS=(diffusion) ;;
-    all)       KINDS=(baseline diffusion) ;;
+    causal_diffusion) KINDS=(causal_diffusion) ;;
+    all)       KINDS=(baseline diffusion causal_diffusion) ;;
     *)
-        echo "Unknown model_kind '$MODEL_KIND'. Use baseline, diffusion, or all."
+        echo "Unknown model_kind '$MODEL_KIND'. Use baseline, diffusion, causal_diffusion, or all."
         exit 1
         ;;
 esac

@@ -17,6 +17,9 @@ case "$MODEL_KIND" in
   baseline)
     DEFAULT_MODEL_PATH="work_dirs/nextqa_baseline"
     ;;
+  causal_diffusion)
+    DEFAULT_MODEL_PATH="work_dirs/nextqa_causal_diffusion"
+    ;;
   *)
     DEFAULT_MODEL_PATH="$MODEL_KIND"
     ;;
