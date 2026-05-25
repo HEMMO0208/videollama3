@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-ROOT_DIR="/home/hyeonmo/project/diffsuperv/VideoLLaMA3"
+ROOT_DIR="/home/hmkang/project/videollama3"
 cd "$ROOT_DIR"
 mkdir -p logs
 
@@ -24,6 +24,6 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 export MODEL_KIND="${MODEL_KIND:-baseline}"
-export DATA_FOLDER="${DATA_FOLDER:-/home/hyeonmo/project/diffsuperv/Tempo/dataset/nextqa/NExTVideo}"
+export DATA_FOLDER="${DATA_FOLDER:-/home/hmkang/project/tempo/dataset/NExTVideo}"
 
-bash /home/hyeonmo/init_ross.sh bash "$ROOT_DIR/scripts/nextqa_oe/eval_nextqa_oe_jsonl.sh"
+bash /home/hmkang/init_ross.sh bash "$ROOT_DIR/scripts/nextqa_oe/eval_nextqa_oe_jsonl.sh"

@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-ROOT_DIR="/home/hyeonmo/project/diffsuperv/VideoLLaMA3"
+ROOT_DIR="/home/hmkang/project/videollama3"
 cd "$ROOT_DIR"
 mkdir -p logs
 
@@ -25,11 +25,11 @@ export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 # ── server-specific paths & settings ─────────────────────────────────────────
 export NPROC_PER_NODE=4
 export MODEL_PATH="${MODEL_PATH:-checkpoints/VideoLLaMA3-2B-Image}"
-export DATA_FOLDER="${DATA_FOLDER:-/home/hyeonmo/project/diffsuperv/Tempo/dataset/nextqa/NExTVideo}"
+export DATA_FOLDER="${DATA_FOLDER:-/home/hmkang/project/tempo/dataset/NExTVideo}"
 export DATA_PATH="${DATA_PATH:-data/nextqa_oe/train_sft.jsonl}"
 export MM_PIXEL_DECODER="${MM_PIXEL_DECODER:-pretrained_vae}"
 export PRETRAINED_DIFFUSION_HEAD="${PRETRAINED_DIFFUSION_HEAD:-work_dirs/nextqa_diffusion/diffusion_head.bin}"
 export OUTPUT_DIR="${OUTPUT_DIR:-work_dirs/nextqa_oe_diffusion}"
 export RUN_NAME="${RUN_NAME:-nextqa_oe_diffusion}"
 
-bash /home/hyeonmo/init_ross.sh bash "$ROOT_DIR/scripts/nextqa_oe/finetune_nextqa_oe_diffusion.sh"
+bash /home/hmkang/init_ross.sh bash "$ROOT_DIR/scripts/nextqa_oe/finetune_nextqa_oe_diffusion.sh"
