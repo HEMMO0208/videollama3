@@ -22,7 +22,12 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import av  # pip install av
+try:
+    import av
+except ImportError:
+    import subprocess as _sp
+    _sp.check_call([sys.executable, "-m", "pip", "install", "av", "-q"])
+    import av
 
 # 영구 실패 키워드 (private, deleted 등 → 재시도 의미 없음)
 PERMANENT_ERRORS = (
