@@ -2,10 +2,11 @@
 """
 Download Koala36M clips for FAVOR-Train from YouTube.
 
-Strategy: yt-dlp로 직접 스트림 URL만 얻고, ffmpeg로 직접 seek+trim.
-yt-dlp가 ffmpeg를 내부 호출할 때 SIGSEGV가 나는 경우의 우회책.
+Strategy: yt-dlp로 스트림 URL 획득 → PyAV(Python libav 바인딩)로 trim.
+ffmpeg 서브프로세스를 전혀 사용하지 않으므로 서버 ffmpeg SIGSEGV 완전 우회.
 
 Usage:
+    pip install av yt-dlp
     python scripts/favor/download_koala36m.py \
         --sft_json dataset/favor/sft.json \
         --out_dir /home/hmkang/project/videollama3/FAVOR/videos/FAVOR-Train \
@@ -21,13 +22,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 시스템 ffmpeg 대신 imageio-ffmpeg 내장 바이너리 사용
-# (서버 ffmpeg가 SIGSEGV를 내는 경우 대비)
-try:
-    import imageio_ffmpeg
-    FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
-except ImportError:
-    FFMPEG_BIN = "ffmpeg"  # fallback
+import av  # pip install av
 
 # 영구 실패 키워드 (private, deleted 등 → 재시도 의미 없음)
 PERMANENT_ERRORS = (
@@ -52,16 +47,11 @@ def parse_args():
     return p.parse_args()
 
 
-def get_stream_url(youtube_url: str, timeout: int = 30) -> str | None:
-    """
-    yt-dlp -g 로 직접 스트림 URL 획득 (ffmpeg 호출 없음).
-    단일 pre-merged mp4 스트림 우선 → ffmpeg merge 불필요.
-    """
+def get_stream_url(youtube_url: str, timeout: int = 30) -> str:
+    """yt-dlp -g 로 직접 스트림 URL 획득 (ffmpeg 호출 없음)."""
     cmd = [
         "yt-dlp", "-g",
         "--quiet", "--no-warnings",
-        # pre-merged 단일 스트림 우선 (YouTube format 18=360p, 22=720p)
-        # merge 불필요하므로 ffmpeg 호출이 없어짐
         "-f", "18/22/best[ext=mp4][height<=480]/best[ext=mp4]/best",
         "--no-playlist",
         youtube_url,
@@ -70,38 +60,68 @@ def get_stream_url(youtube_url: str, timeout: int = 30) -> str | None:
     if result.returncode != 0 or not result.stdout.strip():
         output = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(output or "yt-dlp returned no URL")
-    # 여러 줄일 경우 첫 번째 URL (video stream)
     return result.stdout.strip().splitlines()[0]
 
 
-def ffmpeg_trim(stream_url: str, start: float, end: float,
-                out_path: str, timeout: int = 120) -> None:
+def pyav_trim(stream_url: str, start: float, end: float, out_path: str) -> None:
     """
-    ffmpeg로 스트림 URL에서 직접 seek+trim.
-    -ss를 -i 앞에 배치 → keyframe 기반 빠른 seek.
-    -c copy → re-encoding 없이 stream copy.
+    PyAV(libav Python 바인딩)로 URL에서 직접 seek+decode+re-encode.
+    ffmpeg 서브프로세스 불사용 → 서버 ffmpeg 크래시 완전 우회.
     """
-    duration = end - start
-    tmp_path = out_path + ".part.mp4"  # .mp4 필수: ffmpeg가 확장자로 muxer 결정
-    cmd = [
-        FFMPEG_BIN, "-y",
-        "-ss", str(start),
-        "-i", stream_url,
-        "-t", str(duration),
-        "-c", "copy",
-        "-avoid_negative_ts", "1",
-        tmp_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        # 실패 시 임시 파일 정리
+    tmp_path = out_path + ".part.mp4"
+    try:
+        with av.open(stream_url) as inp:
+            v_in = inp.streams.video[0] if inp.streams.video else None
+            a_in = inp.streams.audio[0] if inp.streams.audio else None
+            if v_in is None:
+                raise RuntimeError("no video stream found")
+
+            # seek: av.time_base = Fraction(1, 1000000) → microseconds로 변환
+            inp.seek(int(start * 1_000_000), any_frame=False)
+
+            # mp4 muxer는 타임스탬프 interleaving에 엄격 → EINVAL 발생 가능
+            # matroska(mkv)는 더 관대하고 ffprobe/ffmpeg 모두 자동 감지함
+            with av.open(tmp_path, "w", format="matroska") as out:
+                v_out = out.add_stream("libx264", rate=v_in.average_rate)
+                v_out.width   = v_in.codec_context.width  // 2 * 2  # libx264: 짝수 필수
+                v_out.height  = v_in.codec_context.height // 2 * 2
+                v_out.pix_fmt = "yuv420p"
+                v_out.options = {"preset": "ultrafast", "crf": "28"}
+
+                a_out = None
+                if a_in:
+                    a_out = out.add_stream("aac")
+                    a_out.sample_rate = a_in.codec_context.sample_rate
+                    a_out.layout      = a_in.codec_context.layout
+
+                streams = (v_in,) + ((a_in,) if a_in else ())
+                for frame in inp.decode(*streams):
+                    t = frame.time
+                    if t is None or t < start - 0.1:
+                        continue
+                    if t > end + 0.1:
+                        break
+                    frame.pts = None  # encoder가 timestamp 자동 관리 (0 기준 reset)
+                    if isinstance(frame, av.VideoFrame):
+                        for pkt in v_out.encode(frame):
+                            out.mux(pkt)
+                    elif isinstance(frame, av.AudioFrame) and a_out:
+                        for pkt in a_out.encode(frame):
+                            out.mux(pkt)
+
+                # flush
+                for pkt in v_out.encode(None):
+                    out.mux(pkt)
+                if a_out:
+                    for pkt in a_out.encode(None):
+                        out.mux(pkt)
+
+        os.rename(tmp_path, out_path)
+
+    except Exception:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-        raise RuntimeError(
-            f"ffmpeg exit code {result.returncode}: "
-            + (result.stderr or "").strip().splitlines()[-1:][0] if (result.stderr or "").strip() else ""
-        )
-    os.rename(tmp_path, out_path)
+        raise
 
 
 def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]:
@@ -122,24 +142,24 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
             # Step 1: yt-dlp로 스트림 URL 획득 (ffmpeg 호출 없음)
             stream_url = get_stream_url(url, timeout=30)
 
-            # Step 2: ffmpeg로 직접 trim
-            ffmpeg_trim(stream_url, start, end, out_path, timeout=120)
+            # Step 2: PyAV로 trim → ffmpeg subprocess 없음
+            pyav_trim(stream_url, start, end, out_path)
 
             if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                 return video_name, True, "downloaded"
-            err_msg = "output file missing after ffmpeg"
+            err_msg = "output file missing after pyav"
 
         except RuntimeError as e:
             err_msg = str(e)
             if any(kw in err_msg for kw in PERMANENT_ERRORS):
-                return video_name, False, err_msg  # 재시도 의미 없음
+                return video_name, False, err_msg
         except subprocess.TimeoutExpired:
-            err_msg = "timeout"
+            err_msg = "yt-dlp timeout"
         except Exception as e:
-            err_msg = str(e)
+            err_msg = f"{type(e).__name__}: {e}"
 
         if attempt < retry:
-            time.sleep(2 ** attempt)  # 지수 백오프
+            time.sleep(2 ** attempt)
 
     return video_name, False, err_msg
 
@@ -184,7 +204,7 @@ def main():
     fail_log = []
     done = already
 
-    log.info(f"workers={args.workers} 로 다운로드 시작 (yt-dlp URL 획득 → ffmpeg trim)...")
+    log.info(f"workers={args.workers} 로 다운로드 시작 (yt-dlp URL → PyAV trim)...")
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
