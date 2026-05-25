@@ -64,7 +64,15 @@ def download_full_video(youtube_url: str, tmp_path: str,
     cmd = [
         "yt-dlp",
         "--quiet", "--no-warnings",
-        "-f", "18/22/best[ext=mp4][height<=480]/best[ext=mp4]/best",
+        # pre-merged 단일 스트림만 선택 (ffmpeg merge 불필요)
+        # vcodec!=none + acodec!=none = 영상+음성 모두 포함된 단일 스트림
+        # 최후 fallback: 음성 없어도 영상만 있으면 허용
+        "-f", ("18/22"
+               "/best[ext=mp4][vcodec!=none][acodec!=none][height<=480]"
+               "/best[ext=mp4][vcodec!=none][acodec!=none]"
+               "/best[vcodec!=none][acodec!=none]"
+               "/bestvideo[ext=mp4][height<=480]"
+               "/bestvideo[ext=mp4]"),
         "--no-playlist",
         "--no-part",          # .part 중간 파일 없이 바로 저장
         "-o", tmp_path,
