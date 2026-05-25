@@ -23,11 +23,6 @@ COOKIES="${COOKIES:-$ROOT_DIR/yt_cookies.txt}"
 WORKERS="${WORKERS:-4}"
 LOG_FILE="logs/download_koala36m_${SLURM_JOB_ID}.log"
 
-# node 바이너리 탐색 (nvm 경로 포함)
-# nvm이 로드되지 않은 SLURM 환경에서도 node를 찾을 수 있도록 명시적 PATH 추가
-export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ 2>/dev/null | sort -V | tail -1)/bin:$HOME/.npm-global/bin:$PATH"
-NODE_BIN=$(which node 2>/dev/null || echo "node")
-
 echo "=========================================="
 echo "Job ID   : $SLURM_JOB_ID"
 echo "Node     : $(hostname)"
@@ -35,17 +30,33 @@ echo "SFT JSON : $SFT_JSON"
 echo "OUT DIR  : $OUT_DIR"
 echo "COOKIES  : $COOKIES"
 echo "WORKERS  : $WORKERS"
-echo "NODE     : $NODE_BIN ($(node --version 2>/dev/null || echo 'not found'))"
 echo "LOG      : $LOG_FILE"
 echo "=========================================="
 
+# init_ross.sh 컨테이너 안에서 Node.js를 설치하고 Python 스크립트를 실행.
+# node가 PATH에 없는 환경(SLURM 컨테이너 등)을 위해
+# nodeenv(pip)로 pre-built Node.js 바이너리를 /tmp에 설치.
 bash /home/hmkang/init_ross.sh bash -c "
-    pip install av yt-dlp -q &&
+    set -e
+    pip install av yt-dlp nodeenv -q
+
+    # 컨테이너 내부에서 node 탐색
+    NODE_BIN=\$(which node 2>/dev/null || true)
+    if [ -z \"\$NODE_BIN\" ]; then
+        echo '[sbatch] node not in PATH — installing via nodeenv (pre-built LTS)...'
+        NODEENV_DIR=\"/tmp/nodeenv_${SLURM_JOB_ID}\"
+        nodeenv --prebuilt --node=lts \"\$NODEENV_DIR\" -q
+        NODE_BIN=\"\$NODEENV_DIR/bin/node\"
+        echo \"[sbatch] Node.js installed: \$NODE_BIN (\$(\$NODE_BIN --version))\"
+    else
+        echo \"[sbatch] Node.js found: \$NODE_BIN (\$(\$NODE_BIN --version))\"
+    fi
+
     python '$ROOT_DIR/scripts/favor/download_koala36m.py' \
         --sft_json  '$SFT_JSON' \
         --out_dir   '$OUT_DIR' \
         --cookies   '$COOKIES' \
         --workers   '$WORKERS' \
-        --node_bin  '$NODE_BIN' \
+        --node_bin  \"\$NODE_BIN\" \
         --log_file  '$LOG_FILE'
 "
