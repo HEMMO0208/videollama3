@@ -74,7 +74,7 @@ def ffmpeg_trim(stream_url: str, start: float, end: float,
     -c copy → re-encoding 없이 stream copy.
     """
     duration = end - start
-    tmp_path = out_path + ".part"
+    tmp_path = out_path + ".part.mp4"  # .mp4 필수: ffmpeg가 확장자로 muxer 결정
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(start),
