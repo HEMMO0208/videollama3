@@ -53,19 +53,31 @@ def parse_args():
     p.add_argument("--retry", type=int, default=2, help="실패 시 재시도 횟수")
     p.add_argument("--cookies", default="/home/hmkang/project/videollama3/yt_cookies.txt",
                    help="yt-dlp에 전달할 쿠키 파일 경로 (없으면 무시)")
+    p.add_argument("--node_bin", default=None,
+                   help="node 바이너리 경로 (없으면 PATH에서 자동 탐색)")
     return p.parse_args()
 
 
 def download_full_video(youtube_url: str, tmp_path: str,
-                        cookies: str | None = None, timeout: int = 300) -> None:
+                        cookies: str | None = None, timeout: int = 300,
+                        node_bin: str | None = None) -> None:
     """
     yt-dlp로 영상 전체를 로컬에 저장 (ffmpeg 호출 없음).
     moov-at-end MP4를 PyAV URL 직접 읽기로 처리 불가한 케이스 우회.
     단일 pre-merged 스트림(format 18/22)이므로 merge 불필요.
+    --js-runtimes + --remote-components 로 YouTube n challenge 해결.
     """
+    # node 바이너리 경로 결정: 인자 > PATH 탐색
+    if node_bin is None:
+        import shutil
+        node_bin = shutil.which("node") or "node"
+
     cmd = [
         "yt-dlp",
         "--quiet", "--no-warnings",
+        # YouTube n challenge 해결: node JS runtime + EJS solver script
+        "--js-runtimes", f"node:{node_bin}",
+        "--remote-components", "ejs:github",
         # pre-merged 단일 스트림만 선택 (ffmpeg merge 불필요)
         # vcodec!=none + acodec!=none = 영상+음성 모두 포함된 단일 스트림
         # 최후 fallback: 음성 없어도 영상만 있으면 허용
@@ -155,7 +167,8 @@ def pyav_trim(src_path: str, start: float, end: float, out_path: str) -> None:
 
 
 def download_one(entry: dict, out_dir: str, retry: int,
-                 cookies: str | None = None) -> tuple[str, bool, str]:
+                 cookies: str | None = None,
+                 node_bin: str | None = None) -> tuple[str, bool, str]:
     """Returns (video_name, success, reason)"""
     video_name = entry["video_name"]
     out_path = os.path.join(out_dir, video_name)
@@ -174,7 +187,8 @@ def download_one(entry: dict, out_dir: str, retry: int,
     for attempt in range(retry + 1):
         try:
             # Step 1: yt-dlp로 전체 영상 다운로드 (ffmpeg 호출 없음)
-            download_full_video(url, tmp_full, cookies=cookies, timeout=300)
+            download_full_video(url, tmp_full, cookies=cookies, timeout=300,
+                                node_bin=node_bin)
 
             # Step 2: PyAV로 로컬 파일에서 trim
             pyav_trim(tmp_full, start, end, out_path)
@@ -247,11 +261,20 @@ def main():
     else:
         log.info(f"쿠키 파일 없음 (bot 감지 시 실패 가능): {args.cookies}")
 
+    # node 바이너리 경로 결정 (n challenge 해결용)
+    import shutil
+    node_bin = args.node_bin or shutil.which("node") or "node"
+    if shutil.which(node_bin):
+        log.info(f"Node.js 사용: {node_bin} (YouTube n challenge 해결)")
+    else:
+        log.warning(f"Node.js 미발견: {node_bin} — n challenge 실패 가능성 높음")
+
     log.info(f"workers={args.workers} 로 다운로드 시작 (yt-dlp → PyAV trim)...")
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(download_one, e, args.out_dir, args.retry, cookies): e
+            pool.submit(download_one, e, args.out_dir, args.retry, cookies,
+                        node_bin): e
             for e in entries
         }
         for fut in as_completed(futures):
