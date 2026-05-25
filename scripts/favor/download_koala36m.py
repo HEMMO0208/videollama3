@@ -37,6 +37,8 @@ PERMANENT_ERRORS = (
     "has been removed",
     "This video has been",
     "Sign in to confirm your age",
+    "Only images are available",       # video stream 없음 (삭제/지역차단)
+    "Requested format is not available",  # pre-merged 포함 어떤 format도 없음
 )
 
 
