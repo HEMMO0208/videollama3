@@ -52,30 +52,38 @@ def parse_args():
     return p.parse_args()
 
 
-def get_stream_url(youtube_url: str, timeout: int = 30) -> str:
-    """yt-dlp -g 로 직접 스트림 URL 획득 (ffmpeg 호출 없음)."""
+def download_full_video(youtube_url: str, tmp_path: str, timeout: int = 300) -> None:
+    """
+    yt-dlp로 영상 전체를 로컬에 저장 (ffmpeg 호출 없음).
+    moov-at-end MP4를 PyAV URL 직접 읽기로 처리 불가한 케이스 우회.
+    단일 pre-merged 스트림(format 18/22)이므로 merge 불필요.
+    """
     cmd = [
-        "yt-dlp", "-g",
+        "yt-dlp",
         "--quiet", "--no-warnings",
         "-f", "18/22/best[ext=mp4][height<=480]/best[ext=mp4]/best",
         "--no-playlist",
+        "--no-part",          # .part 중간 파일 없이 바로 저장
+        "-o", tmp_path,
         youtube_url,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0:
         output = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(output or "yt-dlp returned no URL")
-    return result.stdout.strip().splitlines()[0]
+        raise RuntimeError(output or "yt-dlp download failed")
+    if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+        raise RuntimeError("yt-dlp output file missing or empty")
 
 
-def pyav_trim(stream_url: str, start: float, end: float, out_path: str) -> None:
+def pyav_trim(src_path: str, start: float, end: float, out_path: str) -> None:
     """
-    PyAV(libav Python 바인딩)로 URL에서 직접 seek+decode+re-encode.
+    PyAV(libav Python 바인딩)로 로컬 파일에서 seek+decode+re-encode.
     ffmpeg 서브프로세스 불사용 → 서버 ffmpeg 크래시 완전 우회.
+    로컬 파일 사용으로 moov-at-end 문제도 해결.
     """
     tmp_path = out_path + ".part.mp4"
     try:
-        with av.open(stream_url) as inp:
+        with av.open(src_path) as inp:
             v_in = inp.streams.video[0] if inp.streams.video else None
             a_in = inp.streams.audio[0] if inp.streams.audio else None
             if v_in is None:
@@ -143,14 +151,17 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
     start = float(entry["start"])
     end = float(entry["end"])
 
+    # 임시 전체 영상 경로 (/tmp: 로컬 디스크, moov-at-end 문제 없음)
+    tmp_full = f"/tmp/{video_name}.full.mp4"
+
     err_msg = "unknown"
     for attempt in range(retry + 1):
         try:
-            # Step 1: yt-dlp로 스트림 URL 획득 (ffmpeg 호출 없음)
-            stream_url = get_stream_url(url, timeout=30)
+            # Step 1: yt-dlp로 전체 영상 다운로드 (ffmpeg 호출 없음)
+            download_full_video(url, tmp_full, timeout=300)
 
-            # Step 2: PyAV로 trim → ffmpeg subprocess 없음
-            pyav_trim(stream_url, start, end, out_path)
+            # Step 2: PyAV로 로컬 파일에서 trim
+            pyav_trim(tmp_full, start, end, out_path)
 
             if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                 return video_name, True, "downloaded"
@@ -164,6 +175,9 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
             err_msg = "yt-dlp timeout"
         except Exception as e:
             err_msg = f"{type(e).__name__}: {e}"
+        finally:
+            if os.path.exists(tmp_full):
+                os.remove(tmp_full)  # 전체 영상 즉시 삭제
 
         if attempt < retry:
             time.sleep(2 ** attempt)
