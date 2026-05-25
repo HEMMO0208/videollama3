@@ -35,7 +35,9 @@ serve_images/
 temp/
 
 # data folder
-data/
+data/*
+!data/nextqa_oe/
+!data/nextqa_oe/**
 dataset/
 datasets/
 
