@@ -21,6 +21,14 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 시스템 ffmpeg 대신 imageio-ffmpeg 내장 바이너리 사용
+# (서버 ffmpeg가 SIGSEGV를 내는 경우 대비)
+try:
+    import imageio_ffmpeg
+    FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
+except ImportError:
+    FFMPEG_BIN = "ffmpeg"  # fallback
+
 # 영구 실패 키워드 (private, deleted 등 → 재시도 의미 없음)
 PERMANENT_ERRORS = (
     "Private video",
@@ -76,7 +84,7 @@ def ffmpeg_trim(stream_url: str, start: float, end: float,
     duration = end - start
     tmp_path = out_path + ".part.mp4"  # .mp4 필수: ffmpeg가 확장자로 muxer 결정
     cmd = [
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-ss", str(start),
         "-i", stream_url,
         "-t", str(duration),
