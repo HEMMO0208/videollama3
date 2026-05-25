@@ -19,7 +19,7 @@ export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 SFT_JSON="${SFT_JSON:-$ROOT_DIR/dataset/favor/sft.json}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/FAVOR/videos/FAVOR-Train}"
-WORKERS="${WORKERS:-4}"
+WORKERS="${WORKERS:-2}"  # bot 감지 방지: 병렬 2개 권장 (최대 4)
 LOG_FILE="logs/download_koala36m_${SLURM_JOB_ID}.log"
 
 echo "=========================================="

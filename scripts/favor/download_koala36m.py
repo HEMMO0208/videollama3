@@ -39,6 +39,14 @@ PERMANENT_ERRORS = (
     "Sign in to confirm your age",
 )
 
+# 일시적 rate-limit 에러: 재시도 전 긴 대기 필요
+RATELIMIT_ERRORS = (
+    "Sign in to confirm you're not a bot",
+    "confirm you're not a bot",
+    "HTTP Error 429",
+    "Too Many Requests",
+)
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -63,7 +71,10 @@ def download_full_video(youtube_url: str, tmp_path: str, timeout: int = 300) -> 
         "--quiet", "--no-warnings",
         "-f", "18/22/best[ext=mp4][height<=480]/best[ext=mp4]/best",
         "--no-playlist",
-        "--no-part",          # .part 중간 파일 없이 바로 저장
+        "--no-part",              # .part 중간 파일 없이 바로 저장
+        "--sleep-interval", "1",  # 요청 간 최소 1초 대기 (bot 감지 완화)
+        "--max-sleep-interval", "3",
+        "--extractor-retries", "3",
         "-o", tmp_path,
         youtube_url,
     ]
@@ -171,6 +182,13 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
             err_msg = str(e)
             if any(kw in err_msg for kw in PERMANENT_ERRORS):
                 return video_name, False, err_msg
+            if any(kw in err_msg for kw in RATELIMIT_ERRORS):
+                # bot 감지 → 오래 기다렸다가 재시도
+                wait = 60 * (attempt + 1)
+                logging.getLogger().warning(
+                    f"Rate-limited on {video_name}, waiting {wait}s before retry...")
+                time.sleep(wait)
+                continue
         except subprocess.TimeoutExpired:
             err_msg = "yt-dlp timeout"
         except Exception as e:
