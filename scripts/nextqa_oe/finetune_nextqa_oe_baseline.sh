@@ -17,7 +17,7 @@ MASTER_PORT=${MASTER_PORT:-$ARG_MASTER_PORT}
 RANK=${RANK:-$ARG_RANK}
 
 GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE:-32}
-LOCAL_BATCH_SIZE=${LOCAL_BATCH_SIZE:-2}
+LOCAL_BATCH_SIZE=${LOCAL_BATCH_SIZE:-1}
 GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-$((GLOBAL_BATCH_SIZE/(WORLD_SIZE*NPROC_PER_NODE*LOCAL_BATCH_SIZE)))}
 
 MODEL_PATH=${MODEL_PATH:-work_dirs/videollama3_qwen2.5_2b/stage_3}
@@ -47,6 +47,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --max_frames 32 \
     --model_max_length 16384 \
     --mm_max_length 14400 \
+    --use_batch_flattening False \
     --use_token_compression True \
     --bf16 True \
     --tf32 True \
