@@ -13,11 +13,16 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+# yt-dlp 실행 경로 결정: 바이너리 우선, 없으면 python -m yt_dlp
+_YTDLP_CMD = shutil.which("yt-dlp")
+YTDLP = [_YTDLP_CMD] if _YTDLP_CMD else [sys.executable, "-m", "yt_dlp"]
 
 
 def parse_args():
@@ -50,8 +55,7 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
     # --download-sections "*START-END" 은 초 단위 구간 지정
     # -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" 로 mp4 우선
     # --force-keyframes-at-cuts 로 정확한 cut
-    cmd = [
-        "yt-dlp",
+    cmd = YTDLP + [
         "--quiet",
         "--no-warnings",
         "--download-sections", f"*{start}-{end}",
