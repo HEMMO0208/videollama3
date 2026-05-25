@@ -49,10 +49,13 @@ def parse_args():
                    help="병렬 다운로드 수 (YouTube rate limit 주의, 4~8 권장)")
     p.add_argument("--log_file", default="logs/download_koala36m.log")
     p.add_argument("--retry", type=int, default=2, help="실패 시 재시도 횟수")
+    p.add_argument("--cookies", default="/home/hmkang/project/videollama3/yt_cookies.txt",
+                   help="yt-dlp에 전달할 쿠키 파일 경로 (없으면 무시)")
     return p.parse_args()
 
 
-def download_full_video(youtube_url: str, tmp_path: str, timeout: int = 300) -> None:
+def download_full_video(youtube_url: str, tmp_path: str,
+                        cookies: str | None = None, timeout: int = 300) -> None:
     """
     yt-dlp로 영상 전체를 로컬에 저장 (ffmpeg 호출 없음).
     moov-at-end MP4를 PyAV URL 직접 읽기로 처리 불가한 케이스 우회.
@@ -65,8 +68,10 @@ def download_full_video(youtube_url: str, tmp_path: str, timeout: int = 300) -> 
         "--no-playlist",
         "--no-part",          # .part 중간 파일 없이 바로 저장
         "-o", tmp_path,
-        youtube_url,
     ]
+    if cookies and os.path.exists(cookies):
+        cmd += ["--cookies", cookies]
+    cmd.append(youtube_url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         output = (result.stderr or result.stdout or "").strip()
@@ -139,7 +144,8 @@ def pyav_trim(src_path: str, start: float, end: float, out_path: str) -> None:
         raise
 
 
-def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]:
+def download_one(entry: dict, out_dir: str, retry: int,
+                 cookies: str | None = None) -> tuple[str, bool, str]:
     """Returns (video_name, success, reason)"""
     video_name = entry["video_name"]
     out_path = os.path.join(out_dir, video_name)
@@ -158,7 +164,7 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
     for attempt in range(retry + 1):
         try:
             # Step 1: yt-dlp로 전체 영상 다운로드 (ffmpeg 호출 없음)
-            download_full_video(url, tmp_full, timeout=300)
+            download_full_video(url, tmp_full, cookies=cookies, timeout=300)
 
             # Step 2: PyAV로 로컬 파일에서 trim
             pyav_trim(tmp_full, start, end, out_path)
@@ -225,11 +231,17 @@ def main():
     fail_log = []
     done = already
 
-    log.info(f"workers={args.workers} 로 다운로드 시작 (yt-dlp URL → PyAV trim)...")
+    cookies = args.cookies if os.path.exists(args.cookies) else None
+    if cookies:
+        log.info(f"쿠키 파일 사용: {cookies}")
+    else:
+        log.info(f"쿠키 파일 없음 (bot 감지 시 실패 가능): {args.cookies}")
+
+    log.info(f"workers={args.workers} 로 다운로드 시작 (yt-dlp → PyAV trim)...")
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(download_one, e, args.out_dir, args.retry): e
+            pool.submit(download_one, e, args.out_dir, args.retry, cookies): e
             for e in entries
         }
         for fut in as_completed(futures):
