@@ -49,6 +49,7 @@ torchrun --nnodes "$WORLD_SIZE" \
     --mm_max_length 14400 \
     --use_batch_flattening False \
     --use_token_compression True \
+    --siglip_frame_size 336 \
     --bf16 True \
     --tf32 True \
     --fp16 False \

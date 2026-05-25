@@ -186,6 +186,11 @@ class DataArguments:
     use_batch_flattening: bool = field(default=True, metadata={"help": "Whether to flatten the in-batch sequences of variable lengths."})
     dataset_cache_dir: Optional[str] = field(default=None)
     diffusion_query_prob: float = field(default=1.0)
+    siglip_frame_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "If set, resize each video frame to a square of this size (pixels) before passing to SigLIP. "
+                          "Use 336 to match the fixed resolution used by the diffusion path for fair comparison."}
+    )
 
 
 @dataclass
@@ -336,6 +341,10 @@ class LazySupervisedDataset(Dataset):
                     images = [pad_square_resize_frame(frame, siglip_size) for frame in images]
                     diffusion_frames = [prepare_vae_frame(frame, image_size) for frame in images]
                     diffusion_images = chunk_frames_for_diffusion(diffusion_frames, chunk_size=chunk_size)
+                else:
+                    _siglip_frame_size = getattr(self.data_args, "siglip_frame_size", None)
+                    if _siglip_frame_size is not None:
+                        images = [pad_square_resize_frame(frame, int(_siglip_frame_size)) for frame in images]
                 images = [images]
             else:
                 raise ValueError(f"Unsupported video format: {video_file}")

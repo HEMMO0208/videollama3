@@ -12,8 +12,9 @@
 #   DATA_FOLDER   root directory of NExTVideo clips
 #   OUTPUT_DIR    where to write prediction files  (default: results/nextqa_oe)
 #   RUN_NAME      tag appended to output filenames  (default: $MODEL_KIND)
-#   MAX_FRAMES    frames sampled per video  (default: 100)
+#   MAX_FRAMES    frames sampled per video  (default: 32)
 #   FPS           frames per second for sampling  (default: 1)
+#   FRAME_SIZE    fixed square resolution for each frame in pixels  (default: 336)
 #   MAX_NEW_TOKENS tokens budget for OE generation  (default: 64)
 #   LIMIT         run only first N records (for debugging)
 #   REF_CSV       reference CSV for scoring  (default: dataset/nextqa/openend/${SPLIT%%_*}.csv)
@@ -87,6 +88,7 @@ if [[ -n "${CHUNK_IDX:-}" ]];           then extra_infer_args+=(--chunk-idx "$CH
   --output-path     "$PRED_JSONL" \
   --fps             "${FPS:-1}" \
   --max-frames      "${MAX_FRAMES:-32}" \
+  --frame-size      "${FRAME_SIZE:-336}" \
   --max-new-tokens  "${MAX_NEW_TOKENS:-64}" \
   --seed            "${SEED:-42}" \
   "${extra_infer_args[@]}"
