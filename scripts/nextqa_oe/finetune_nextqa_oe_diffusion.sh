@@ -26,7 +26,7 @@ DATA_PATH=${DATA_PATH:-data/nextqa_oe/train_sft.jsonl}
 OUTPUT_DIR=${OUTPUT_DIR:-work_dirs/nextqa_oe_diffusion}
 RUN_NAME=${RUN_NAME:-nextqa_oe_diffusion}
 MM_PIXEL_DECODER=${MM_PIXEL_DECODER:?Set MM_PIXEL_DECODER to the ross VAE checkpoint path}
-PRETRAINED_DIFFUSION_HEAD=${PRETRAINED_DIFFUSION_HEAD:-work_dirs/nextqa_diffusion_pretrain/diffusion_head.bin}
+PRETRAINED_DIFFUSION_HEAD=${PRETRAINED_DIFFUSION_HEAD:-work_dirs/nextqa_diffusion/diffusion_head.bin}
 
 EXTRA_TRAIN_ARGS=()
 if [[ -n "$PRETRAINED_DIFFUSION_HEAD" ]]; then
