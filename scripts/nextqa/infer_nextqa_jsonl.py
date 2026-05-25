@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image
 from tqdm import tqdm
 
 sys.path.append("./")
@@ -118,7 +119,18 @@ def resolve_video_path(record, data_folder):
     return os.path.join(data_folder, video_path)
 
 
-def build_inputs(record, video_path, processor, fps, max_frames):
+def pad_square_resize_frame(frame, size):
+    """Pad to square then resize to (size, size). Matches train.py behavior."""
+    if not isinstance(frame, Image.Image):
+        frame = Image.fromarray(frame)
+    w, h = frame.size
+    max_side = max(w, h)
+    padded = Image.new("RGB", (max_side, max_side), (0, 0, 0))
+    padded.paste(frame, ((max_side - w) // 2, (max_side - h) // 2))
+    return padded.resize((size, size), Image.BICUBIC)
+
+
+def build_inputs(record, video_path, processor, fps, max_frames, frame_size=None):
     human = next(message for message in record["conversations"] if message["from"] == "human")
     instruction = strip_video_tag(human["value"])
     if type(processor).__module__.startswith("transformers_modules."):
@@ -139,6 +151,8 @@ def build_inputs(record, video_path, processor, fps, max_frames):
         )
 
     frames, timestamps = processor.load_video(video_path, fps=fps, max_frames=max_frames)
+    if frame_size is not None:
+        frames = [pad_square_resize_frame(f, frame_size) for f in frames]
     conversation = [
         {
             "role": "user",
@@ -193,6 +207,11 @@ def main():
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--frame-size", type=int, default=None,
+        help="If set, each video frame is padded to a square and resized to this resolution "
+             "before being passed to the vision encoder (e.g. 336 to match diffusion training).",
+    )
     args = parser.parse_args()
 
     if args.chunk_idx >= args.num_chunks:
@@ -238,7 +257,7 @@ def main():
                 "error": None,
             }
             try:
-                inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames)
+                inputs = build_inputs(record, video_path, processor, args.fps, args.max_frames, frame_size=args.frame_size)
                 response = mm_infer(
                     inputs,
                     model=model,

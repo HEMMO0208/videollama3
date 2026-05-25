@@ -59,6 +59,7 @@ fi
   --output-path "${OUTPUT_PATH:-$OUTPUT_DIR/${SPLIT}_${RUN_NAME}_predictions.jsonl}" \
   --fps "${FPS:-1}" \
   --max-frames "${MAX_FRAMES:-100}" \
+  --frame-size "${FRAME_SIZE:-336}" \
   --max-new-tokens "${MAX_NEW_TOKENS:-16}" \
   --seed "${SEED:-42}" \
   "${extra_args[@]}"
