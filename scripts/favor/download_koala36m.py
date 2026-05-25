@@ -44,24 +44,31 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
     url = entry["url"]
     start = float(entry["start"])
     end = float(entry["end"])
-    duration = end - start
 
     # yt-dlp: 해당 구간만 다운로드
-    # --download-sections "*START-END" 은 초 단위 구간 지정
-    # -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4" 로 mp4 우선
-    # --force-keyframes-at-cuts 로 정확한 cut
+    # --force-keyframes-at-cuts 제거: 재인코딩으로 ffmpeg SIGSEGV 유발
+    # stream copy 방식으로 빠르고 안정적으로 cut
     cmd = [
         "yt-dlp",
         "--quiet",
         "--no-warnings",
         "--download-sections", f"*{start}-{end}",
-        "--force-keyframes-at-cuts",
         "-f", "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4/best",
         "--merge-output-format", "mp4",
         "-o", out_path,
         url,
     ]
 
+    # 재시도 불필요한 영구 실패 키워드 (private, deleted 등)
+    PERMANENT_ERRORS = (
+        "Private video",
+        "This video is not available",
+        "Video unavailable",
+        "has been removed",
+        "This video has been",
+    )
+
+    err_msg = "unknown"
     for attempt in range(retry + 1):
         try:
             result = subprocess.run(
@@ -73,8 +80,12 @@ def download_one(entry: dict, out_dir: str, retry: int) -> tuple[str, bool, str]
             if result.returncode == 0 and os.path.exists(out_path):
                 return video_name, True, "downloaded"
             # 실패 이유 추출
-            err = (result.stderr or result.stdout or "unknown error").strip().splitlines()
-            err_msg = err[-1] if err else "unknown"
+            output = (result.stderr or result.stdout or "unknown error").strip()
+            err_lines = output.splitlines()
+            err_msg = err_lines[-1] if err_lines else "unknown"
+            # 영구 실패는 즉시 반환 (재시도 의미 없음)
+            if any(kw in output for kw in PERMANENT_ERRORS):
+                return video_name, False, err_msg
             if attempt < retry:
                 time.sleep(2 ** attempt)  # 지수 백오프
         except subprocess.TimeoutExpired:
