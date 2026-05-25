@@ -121,6 +121,8 @@ def pyav_trim(stream_url: str, start: float, end: float, out_path: str) -> None:
                     for pkt in a_out.encode(None):
                         out.mux(pkt)
 
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            raise RuntimeError("no frames written (seek overshot or empty segment)")
         os.rename(tmp_path, out_path)
 
     except Exception:
