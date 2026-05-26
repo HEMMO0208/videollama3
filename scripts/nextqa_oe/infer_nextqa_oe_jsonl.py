@@ -56,9 +56,18 @@ def resolve_video_path(record, data_folder):
 
 
 def pad_square_resize_frame(frame, size):
-    """Pad to square then resize to (size, size). Matches train.py behavior."""
+    """Pad to square then resize to (size, size). Matches train.py behavior.
+
+    Handles both (H, W, C) and (C, H, W) numpy arrays — load_video() returns
+    frames transposed to channels-first (C, H, W) format via ffmpeg, but PIL
+    expects channels-last (H, W, C).
+    """
     if not isinstance(frame, Image.Image):
-        frame = Image.fromarray(frame)
+        arr = np.asarray(frame)
+        # load_video() transposes frames to (C, H, W); PIL needs (H, W, C)
+        if arr.ndim == 3 and arr.shape[0] == 3 and arr.shape[-1] != 3:
+            arr = arr.transpose(1, 2, 0)
+        frame = Image.fromarray(arr)
     w, h = frame.size
     max_side = max(w, h)
     padded = Image.new("RGB", (max_side, max_side), (0, 0, 0))
