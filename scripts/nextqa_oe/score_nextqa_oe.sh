@@ -33,9 +33,11 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 pip install nltk pandas pywsd --quiet
 "$PYTHON_BIN" -c "
 import nltk
-nltk.download('wordnet',   quiet=True)
-nltk.download('punkt',     quiet=True)
-nltk.download('punkt_tab', quiet=True)
+nltk.download('wordnet',                        quiet=True)
+nltk.download('punkt',                          quiet=True)
+nltk.download('punkt_tab',                      quiet=True)
+nltk.download('averaged_perceptron_tagger',     quiet=True)
+nltk.download('averaged_perceptron_tagger_eng', quiet=True)
 "
 PRED_DIR="${PRED_DIR:-results/nextqa_oe}"
 REF_BASE_DIR="${REF_BASE_DIR:-dataset/nextqa/openend}"
